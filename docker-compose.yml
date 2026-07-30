@@ -1,0 +1,76 @@
+
+services:
+  # ─── PostgreSQL Database ───
+  postgres:
+    image: postgres:15-alpine
+    container_name: cocompute-db
+    environment:
+      POSTGRES_DB: cocompute
+      POSTGRES_USER: cocompute
+      POSTGRES_PASSWORD: cocompute
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cocompute"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis (Caching / Future Use) ───
+  redis:
+    image: redis:7-alpine
+    container_name: cocompute-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── Master Node ───
+  master:
+    build: ./master
+    container_name: cocompute-master
+    ports:
+      - "8000:8000"
+      - "9999:9999/udp"
+    environment:
+      DATABASE_URL: postgresql://cocompute:cocompute@postgres:5432/cocompute
+      JWT_SECRET_KEY: cocompute-production-secret-change-me
+      WORKER_API_KEY: cocompute-worker-key
+      SCHEDULER_ALGORITHM: resource_aware
+      AI_MODEL_PATH: /app/model.pkl
+      MASTER_DISCOVERY_IP: master
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Worker Node (scale with --scale worker=N) ───
+  worker:
+    build: ./worker
+    environment:
+      MASTER_IP: master
+      MASTER_PORT: 8000
+      WORKER_API_KEY: cocompute-worker-key
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - master
+    restart: unless-stopped
+
+  # ─── Dashboard (React + Nginx) ───
+  dashboard:
+    build: ./dashboard
+    container_name: cocompute-dashboard
+    ports:
+      - "3000:80"
+    depends_on:
+      - master
+    restart: unless-stopped
+
+volumes:
+  pgdata:
