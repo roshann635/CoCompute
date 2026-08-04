@@ -9,6 +9,8 @@ Computes performance metrics for the CoCompute cluster:
   - Failure statistics
   - Worker performance rankings
   - Scheduler comparison data
+  - SLA breach detection (FR-15)
+  - Cluster alerts aggregation (FR-15)
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -29,12 +31,10 @@ def compute_job_speedup(db: Session, job_id: int) -> dict:
     if not job or not job.start_time or not job.end_time:
         return {"speedup": 0.0, "efficiency": 0.0, "workers_used": 0}
 
-    # Wall-clock time
     wall_clock = (job.end_time - job.start_time).total_seconds()
     if wall_clock <= 0:
         wall_clock = 0.001
 
-    # Sum of all chunk execution times (sequential estimate)
     tasks = db.query(models.Task).filter(models.Task.job_id == job_id).all()
     task_ids = [t.id for t in tasks]
     chunks = db.query(models.TaskChunk).filter(
@@ -96,7 +96,6 @@ def get_worker_rankings(db: Session) -> list:
     rankings = []
 
     for w in workers:
-        # Average execution time
         chunks = db.query(models.TaskChunk).filter(
             models.TaskChunk.worker_id == w.id,
             models.TaskChunk.status == "completed",
@@ -109,7 +108,6 @@ def get_worker_rankings(db: Session) -> list:
             times = [(c.end_time - c.start_time).total_seconds() for c in chunks]
             avg_time = sum(times) / len(times)
 
-        total_tasks = w.total_tasks_completed + w.total_tasks_failed
         rankings.append({
             "worker_uid": w.worker_uid,
             "hostname": w.hostname,
@@ -138,7 +136,6 @@ def get_failure_statistics(db: Session) -> dict:
     total_jobs = db.query(models.Job).count()
     failed_jobs = db.query(models.Job).filter(models.Job.status == "failed").count()
 
-    # Average retries on failed chunks
     failed = db.query(models.TaskChunk).filter(models.TaskChunk.status == "failed").all()
     avg_retries = sum(c.attempt_count for c in failed) / max(len(failed), 1)
 
@@ -156,7 +153,6 @@ def get_failure_statistics(db: Session) -> dict:
 def get_scheduler_comparison(db: Session) -> dict:
     """
     Compare scheduling algorithms by analyzing SchedulerDecision records.
-    Groups by algorithm and computes avg score and avg chunk execution time.
     """
     decisions = db.query(models.SchedulerDecision).all()
 
@@ -168,7 +164,6 @@ def get_scheduler_comparison(db: Session) -> dict:
         algo_stats[algo]["count"] += 1
         algo_stats[algo]["total_score"] += (d.score or 0.0)
 
-        # Look up chunk execution time
         chunk = db.query(models.TaskChunk).filter(
             models.TaskChunk.id == d.chunk_id,
             models.TaskChunk.status == "completed"
@@ -194,7 +189,6 @@ def get_scheduler_comparison(db: Session) -> dict:
 def get_cluster_efficiency(db: Session) -> float:
     """
     Compute overall cluster efficiency as a percentage.
-    Based on: (completed tasks / total tasks) * (avg reliability) * 100
     """
     total = db.query(models.TaskChunk).count()
     completed = db.query(models.TaskChunk).filter(models.TaskChunk.status == "completed").count()
@@ -230,3 +224,142 @@ def get_resource_utilization_history(db: Session, worker_id: int | None = None, 
         }
         for m in metrics
     ]
+
+
+# ─────────────────────────────────────────────────────
+# FR-15: SLA Breach Detection & Cluster Alerts
+# ─────────────────────────────────────────────────────
+
+SLA_BREACH_SECONDS = 300  # 5-minute default SLA per chunk
+
+
+def detect_sla_breaches(db: Session, sla_seconds: int = SLA_BREACH_SECONDS) -> list:
+    """
+    FR-15: Detect task chunks that have been running longer than the SLA limit.
+    Returns a list of alert dicts for breaching chunks.
+    """
+    now = datetime.now(timezone.utc)
+    breach_threshold = now - timedelta(seconds=sla_seconds)
+
+    breaching = db.query(models.TaskChunk).filter(
+        models.TaskChunk.status.in_(["assigned", "running"]),
+        models.TaskChunk.start_time.isnot(None),
+        models.TaskChunk.start_time < breach_threshold
+    ).all()
+
+    results = []
+    for chunk in breaching:
+        running_for = (now - chunk.start_time).total_seconds() if chunk.start_time else 0
+        worker = db.query(models.Worker).filter(models.Worker.id == chunk.worker_id).first()
+        task = db.query(models.Task).filter(models.Task.id == chunk.task_id).first()
+        job = db.query(models.Job).filter(models.Job.id == task.job_id).first() if task else None
+
+        results.append({
+            "type": "sla_breach",
+            "severity": "warning",
+            "chunk_id": chunk.id,
+            "job_id": job.id if job else None,
+            "job_name": job.name if job else "Unknown",
+            "worker_uid": worker.worker_uid if worker else None,
+            "worker_hostname": worker.hostname if worker else "Unknown",
+            "running_for_seconds": round(running_for, 1),
+            "sla_seconds": sla_seconds,
+            "message": (
+                f"Chunk #{chunk.id} running {round(running_for)}s "
+                f"(SLA: {sla_seconds}s) on '{worker.hostname if worker else 'unknown'}'"
+            ),
+            "timestamp": now.isoformat()
+        })
+    return results
+
+
+def get_cluster_alerts(db: Session) -> list:
+    """
+    FR-15: Aggregate all active cluster alerts:
+      1. Worker disconnections (offline in last 10 min)
+      2. Failed jobs (last hour)
+      3. SLA-breaching task chunks
+      4. High-utilization workers (skipped by FR-14 scheduler)
+    Returns alerts sorted by severity: error > warning > info.
+    """
+    alerts = []
+    now = datetime.now(timezone.utc)
+
+    # ── 1: Worker disconnections ──
+    recently_threshold = now - timedelta(minutes=10)
+    offline_workers = db.query(models.Worker).filter(
+        models.Worker.status == "offline",
+        models.Worker.last_seen >= recently_threshold
+    ).all()
+
+    for w in offline_workers:
+        disconnected_ago = (now - w.last_seen).total_seconds() if w.last_seen else 0
+        alerts.append({
+            "id": f"disconnect_{w.worker_uid}",
+            "type": "worker_disconnected",
+            "severity": "error",
+            "worker_uid": w.worker_uid,
+            "worker_hostname": w.hostname,
+            "message": f"Worker '{w.hostname or w.worker_uid[:8]}' disconnected {round(disconnected_ago)}s ago",
+            "timestamp": w.last_seen.isoformat() if w.last_seen else now.isoformat(),
+            "metadata": {
+                "cpu_cores": w.cpu_cores,
+                "ram_total": w.ram_total,
+                "tasks_completed": w.total_tasks_completed
+            }
+        })
+
+    # ── 2: Failed jobs (last hour) ──
+    one_hour_ago = now - timedelta(hours=1)
+    failed_jobs = db.query(models.Job).filter(
+        models.Job.status == "failed",
+        models.Job.end_time >= one_hour_ago
+    ).all()
+
+    for job in failed_jobs:
+        alerts.append({
+            "id": f"job_failed_{job.id}",
+            "type": "job_failed",
+            "severity": "error",
+            "job_id": job.id,
+            "job_name": job.name,
+            "message": f"Job '{job.name}' (#{job.id}) failed — {job.failed_tasks}/{job.total_tasks} chunks failed",
+            "timestamp": job.end_time.isoformat() if job.end_time else now.isoformat(),
+            "metadata": {
+                "total_tasks": job.total_tasks,
+                "failed_tasks": job.failed_tasks,
+                "job_type": job.job_type
+            }
+        })
+
+    # ── 3: SLA breaches ──
+    sla_alerts = detect_sla_breaches(db)
+    alerts.extend(sla_alerts)
+
+    # ── 4: High-utilization workers ──
+    try:
+        from ..engine.scheduler import HIGH_UTILIZATION_THRESHOLD, HIGH_RAM_THRESHOLD
+        online_workers = db.query(models.Worker).filter(models.Worker.status == "online").all()
+        for w in online_workers:
+            cpu = w.cpu_utilization or 0.0
+            ram = w.ram_usage or 0.0
+            if cpu > HIGH_UTILIZATION_THRESHOLD or ram > HIGH_RAM_THRESHOLD:
+                alerts.append({
+                    "id": f"high_util_{w.worker_uid}",
+                    "type": "high_utilization",
+                    "severity": "warning",
+                    "worker_uid": w.worker_uid,
+                    "worker_hostname": w.hostname,
+                    "message": (
+                        f"Worker '{w.hostname}' overloaded "
+                        f"(CPU: {cpu:.0f}%, RAM: {ram:.0f}%) — scheduler bypassing (FR-14)"
+                    ),
+                    "timestamp": now.isoformat(),
+                    "metadata": {"cpu": cpu, "ram": ram}
+                })
+    except ImportError:
+        pass
+
+    severity_order = {"error": 0, "warning": 1, "info": 2}
+    alerts.sort(key=lambda a: severity_order.get(a.get("severity", "info"), 2))
+    return alerts

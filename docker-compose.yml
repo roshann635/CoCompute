@@ -44,6 +44,11 @@ services:
       SCHEDULER_ALGORITHM: resource_aware
       AI_MODEL_PATH: /app/model.pkl
       MASTER_DISCOVERY_IP: master
+      # FR-14: Load rebalancing thresholds
+      HIGH_UTILIZATION_THRESHOLD: "85.0"
+      HIGH_RAM_THRESHOLD: "90.0"
+      HEARTBEAT_TIMEOUT_SECONDS: "15"
+      MAX_RETRIES: "3"
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,6 +61,7 @@ services:
       MASTER_IP: master
       MASTER_PORT: 8000
       WORKER_API_KEY: cocompute-worker-key
+      HEARTBEAT_INTERVAL: "5"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

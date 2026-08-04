@@ -113,8 +113,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environments — NEVER commit real secrets
 .env
+.env.local
+.env.*.local
 .venv
 venv
 ENV
@@ -148,8 +150,10 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# Node modules / frontend build
+# Node / Frontend (dashboard)
 node_modules/
+dashboard/node_modules/
+dashboard/dist/
 dist/
 dist-ssr/
 *.local
@@ -159,11 +163,20 @@ dist-ssr/
 *.sqlite
 *.sqlite-journal
 
-# Model checkpoints / picklings
+# Model / AI artifacts
 *.pkl
+model.pkl
+*.pt
+*.pth
+*.onnx
 
 # Generated SSL/TLS certificates and private keys (CRITICAL!)
 ssl/certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
 
 # IDE / Editor configuration
 .vscode/
@@ -174,3 +187,34 @@ ssl/certs/
 *.njsproj
 *.sln
 *.sw?
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Docker override files
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Logs
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage / test artifacts
+coverage/
+.nyc_output/
+
+# Temp files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# CoCompute runtime files
+.cocompute/
+.session/
+cocompute_outputs/
+cocompute_cache/
+*.cocompute
+task_history.db

@@ -8,6 +8,9 @@ Supports three scheduling algorithms:
 
 The active algorithm is set via the SCHEDULER_ALGORITHM environment variable.
 All scheduling decisions are logged to the SchedulerDecision table for auditability.
+
+FR-14: Dynamic Load Rebalancing — workers above HIGH_UTILIZATION_THRESHOLD are skipped
+entirely (not just penalized) to avoid overloading active nodes.
 """
 import asyncio
 import os
@@ -24,6 +27,54 @@ logger = logging.getLogger(__name__)
 SCHEDULER_ALGORITHM = os.getenv("SCHEDULER_ALGORITHM", "resource_aware")
 MAX_RETRIES = 3
 HEARTBEAT_TIMEOUT_SECONDS = 15
+
+# FR-14: Workers above this CPU utilization threshold are skipped during scheduling
+HIGH_UTILIZATION_THRESHOLD = float(os.getenv("HIGH_UTILIZATION_THRESHOLD", "85.0"))
+# FR-14: Workers above this RAM usage percentage are also skipped
+HIGH_RAM_THRESHOLD = float(os.getenv("HIGH_RAM_THRESHOLD", "90.0"))
+
+
+def filter_available_workers(workers: list[models.Worker], db: Session) -> tuple[list[models.Worker], list[models.Worker]]:
+    """
+    FR-14: Filter out workers that exceed utilization thresholds.
+    Returns (available_workers, skipped_workers).
+    Workers above HIGH_UTILIZATION_THRESHOLD (CPU) or HIGH_RAM_THRESHOLD (RAM)
+    are excluded entirely from scheduling — not just penalized.
+    """
+    available = []
+    skipped = []
+    for w in workers:
+        cpu = w.cpu_utilization or 0.0
+        ram = w.ram_usage or 0.0
+        if cpu > HIGH_UTILIZATION_THRESHOLD or ram > HIGH_RAM_THRESHOLD:
+            skipped.append(w)
+            log_system_event(
+                db, "WARNING", "scheduler",
+                f"FR-14: Skipping overloaded worker {w.worker_uid} "
+                f"(CPU={cpu:.1f}% > {HIGH_UTILIZATION_THRESHOLD}% threshold or "
+                f"RAM={ram:.1f}% > {HIGH_RAM_THRESHOLD}% threshold)",
+                {"worker_uid": w.worker_uid, "cpu": cpu, "ram": ram}
+            )
+        else:
+            available.append(w)
+    return available, skipped
+
+
+# Runtime-configurable scheduler algorithm (can be changed via API)
+_active_algorithm = SCHEDULER_ALGORITHM
+
+
+def get_active_algorithm() -> str:
+    return _active_algorithm
+
+
+def set_active_algorithm(algorithm: str) -> None:
+    global _active_algorithm
+    valid = {"round_robin", "resource_aware", "ai_predictive"}
+    if algorithm not in valid:
+        raise ValueError(f"Unknown algorithm: {algorithm}. Valid: {valid}")
+    _active_algorithm = algorithm
+    logger.info(f"Scheduler algorithm changed to: {algorithm}")
 
 
 def resource_aware_select(workers: list[models.Worker], chunk: models.TaskChunk, db: Session) -> tuple[models.Worker | None, float]:
@@ -96,8 +147,19 @@ async def unified_scheduler_loop():
             db = SessionLocal()
 
             # 1. Get online workers
-            workers = db.query(models.Worker).filter(models.Worker.status == "online").all()
+            all_workers = db.query(models.Worker).filter(models.Worker.status == "online").all()
+            if not all_workers:
+                await asyncio.sleep(2)
+                continue
+
+            # FR-14: Filter out overloaded workers before scheduling
+            workers, skipped = filter_available_workers(all_workers, db)
+            if skipped:
+                logger.debug(f"FR-14: Skipped {len(skipped)} overloaded worker(s). {len(workers)} available.")
+
             if not workers:
+                logger.warning("All online workers are over utilization threshold. No chunks will be dispatched.")
+                db.commit()  # commit the warning logs
                 await asyncio.sleep(2)
                 continue
 
@@ -109,22 +171,21 @@ async def unified_scheduler_loop():
             for chunk in pending_chunks:
                 selected_worker = None
                 score = None
-                algorithm_used = SCHEDULER_ALGORITHM
+                algorithm_used = get_active_algorithm()
 
-                if SCHEDULER_ALGORITHM == "round_robin":
+                if algorithm_used == "round_robin":
                     selected_worker = round_robin_select(workers, chunk, db)
                     score = 0.0
 
-                elif SCHEDULER_ALGORITHM == "resource_aware":
+                elif algorithm_used == "resource_aware":
                     selected_worker, score = resource_aware_select(workers, chunk, db)
 
-                elif SCHEDULER_ALGORITHM == "ai_predictive":
+                elif algorithm_used == "ai_predictive":
                     # Try AI first, fall back to resource_aware
                     try:
                         from .ai_scheduler import predict_best_worker
                         selected_worker = predict_best_worker(workers)
                         score = 0.0
-                        algorithm_used = "ai_predictive"
                     except Exception:
                         selected_worker, score = resource_aware_select(workers, chunk, db)
                         algorithm_used = "resource_aware_fallback"

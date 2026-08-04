@@ -1,19 +1,116 @@
 @import "tailwindcss";
 
 @theme {
-  --color-background: #0B0F19;
-  --color-surface: #1E293B;
+  --color-background: #080C14;
+  --color-surface: #111827;
+  --color-surface-2: #1E2A3A;
   --color-primary: #3B82F6;
   --color-secondary: #10B981;
+  --color-accent: #8B5CF6;
+  --color-warning: #F59E0B;
   --color-danger: #EF4444;
 }
 
 @layer base {
   body {
     @apply bg-background text-white antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
+  }
+  *::-webkit-scrollbar { width: 5px; height: 5px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+  *::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
 }
 
 .glass-panel {
-  @apply bg-surface/50 backdrop-blur-md border border-white/10 shadow-xl rounded-2xl;
+  @apply bg-surface/60 backdrop-blur-md border border-white/8 shadow-2xl rounded-2xl;
 }
+
+.glass-panel-2 {
+  @apply bg-surface-2/70 backdrop-blur-md border border-white/10 shadow-xl rounded-xl;
+}
+
+/* ── Shimmer loading skeleton ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.03) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* ── Alert pulse (for notification badge) ── */
+@keyframes alert-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.75; transform: scale(1.15); }
+}
+.alert-pulse {
+  animation: alert-pulse 1.5s ease-in-out infinite;
+}
+
+/* ── Notification tray slide-in ── */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);   opacity: 1; }
+}
+.slide-in-right {
+  animation: slide-in-right 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ── Modal backdrop fade ── */
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.backdrop-in { animation: backdrop-in 0.2s ease-out forwards; }
+
+/* ── Scale-in for modals ── */
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.scale-in { animation: scale-in 0.2s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+/* ── Gradient text utility ── */
+.gradient-text {
+  background: linear-gradient(135deg, #3B82F6, #8B5CF6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Progress bar animation ── */
+@keyframes progress-fill {
+  from { width: 0; }
+}
+.progress-bar { animation: progress-fill 0.6s ease-out forwards; }
+
+/* ── Glow effects ── */
+.glow-primary { box-shadow: 0 0 20px rgba(59, 130, 246, 0.25); }
+.glow-success { box-shadow: 0 0 20px rgba(16, 185, 129, 0.25); }
+.glow-danger  { box-shadow: 0 0 20px rgba(239, 68, 68, 0.25); }
+
+/* ── Notification toast slide-in from top ── */
+@keyframes toast-in {
+  from { transform: translateY(-120%); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@keyframes toast-out {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(-120%); opacity: 0; }
+}
+.toast-in  { animation: toast-in  0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+.toast-out { animation: toast-out 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+/* ── Status dot blink ── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.blink { animation: blink 2s ease-in-out infinite; }
