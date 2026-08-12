@@ -172,6 +172,152 @@ def generate_generic_python_job(script: str, data_chunks: list) -> list:
     return tasks
 
 
+def generate_sorting_job(array_size: int, chunks: int) -> list:
+    """
+    Distributed sorting.
+    Generates a large list of random numbers, splits it into chunks,
+    and each worker sorts its chunk.
+    """
+    import random
+    random.seed(42)
+    data_array = [random.randint(1, 1000000) for _ in range(array_size)]
+    
+    chunk_size = math.ceil(array_size / chunks) if array_size else 1
+    tasks = []
+    
+    script = """
+import sys, json
+
+data = json.loads(sys.argv[1])
+numbers = data["numbers"]
+sorted_numbers = sorted(numbers)
+print(json.dumps({"sorted_numbers": sorted_numbers}))
+""".strip()
+
+    for i in range(chunks):
+        start = i * chunk_size
+        end = min(start + chunk_size, array_size)
+        chunk_data = data_array[start:end]
+        if not chunk_data:
+            continue
+            
+        payload_data = json.dumps({"numbers": chunk_data})
+        tasks.append({
+            "chunk_index": i,
+            "payload": {
+                "type": "python",
+                "script": script,
+                "args": [payload_data]
+            }
+        })
+    return tasks
+
+
+def generate_image_processing_job(images_count: int, filter_type: str, chunks: int) -> list:
+    """
+    Distributed Image Processing (Mock representation using pixel matrices).
+    Each image is represented as a 10x10 matrix of [R, G, B] values.
+    """
+    import random
+    random.seed(42)
+    
+    images = []
+    for img_idx in range(images_count):
+        pixels = [[[random.randint(0, 255) for _ in range(3)] for _ in range(10)] for _ in range(10)]
+        images.append({"id": img_idx, "pixels": pixels})
+        
+    chunk_size = math.ceil(images_count / chunks) if images_count else 1
+    tasks = []
+    
+    script = """
+import sys, json
+
+data = json.loads(sys.argv[1])
+images = data["images"]
+filter_type = data["filter_type"]
+
+processed = []
+for img in images:
+    pixels = img["pixels"]
+    new_pixels = []
+    for row in pixels:
+        new_row = []
+        for pixel in row:
+            r, g, b = pixel[0], pixel[1], pixel[2]
+            if filter_type == "grayscale":
+                gray = int(0.299 * r + 0.587 * g + 0.114 * b)
+                new_row.append([gray, gray, gray])
+            elif filter_type == "invert":
+                new_row.append([255 - r, 255 - g, 255 - b])
+            else:
+                new_row.append([r, g, b])
+        new_pixels.append(new_row)
+    processed.append({"id": img["id"], "pixels": new_pixels})
+    
+print(json.dumps({"processed_images": processed}))
+""".strip()
+
+    for i in range(chunks):
+        start = i * chunk_size
+        end = min(start + chunk_size, images_count)
+        chunk_images = images[start:end]
+        if not chunk_images:
+            continue
+            
+        payload_data = json.dumps({
+            "images": chunk_images,
+            "filter_type": filter_type
+        })
+        tasks.append({
+            "chunk_index": i,
+            "payload": {
+                "type": "python",
+                "script": script,
+                "args": [payload_data]
+            }
+        })
+    return tasks
+
+
+def generate_compression_job(file_size_kb: int, chunks: int) -> list:
+    """
+    Distributed Compression.
+    Splits text lines into chunks and compresses them using zlib.
+    """
+    text_block = "CoCompute distributed execution test data. " * (file_size_kb * 20)
+    lines = [text_block[i:i+100] for i in range(0, len(text_block), 100)]
+    
+    chunk_size = math.ceil(len(lines) / chunks) if lines else 1
+    tasks = []
+    
+    script = """
+import sys, json, zlib, base64
+
+data = json.loads(sys.argv[1])
+text = data["text"]
+compressed = base64.b64encode(zlib.compress(text.encode())).decode()
+print(json.dumps({"compressed_data": compressed, "original_length": len(text)}))
+""".strip()
+
+    for i in range(chunks):
+        start = i * chunk_size
+        end = min(start + chunk_size, len(lines))
+        chunk_text = "\n".join(lines[start:end])
+        if not chunk_text:
+            continue
+            
+        payload_data = json.dumps({"text": chunk_text})
+        tasks.append({
+            "chunk_index": i,
+            "payload": {
+                "type": "python",
+                "script": script,
+                "args": [payload_data]
+            }
+        })
+    return tasks
+
+
 def generate_job_chunks(job_type: str, params: dict) -> list:
     """Route to the correct job generator based on type."""
     if job_type == "prime_generation":
@@ -190,6 +336,22 @@ def generate_job_chunks(job_type: str, params: dict) -> list:
     elif job_type == "word_count":
         return generate_word_count_job(
             params.get("text", "hello world"),
+            params.get("chunks", 5)
+        )
+    elif job_type == "sorting":
+        return generate_sorting_job(
+            params.get("array_size", 1000),
+            params.get("chunks", 5)
+        )
+    elif job_type == "image_processing":
+        return generate_image_processing_job(
+            params.get("images_count", 5),
+            params.get("filter_type", "grayscale"),
+            params.get("chunks", 2)
+        )
+    elif job_type == "compression":
+        return generate_compression_job(
+            params.get("file_size_kb", 100),
             params.get("chunks", 5)
         )
     elif job_type == "generic_python":

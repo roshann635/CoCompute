@@ -14,6 +14,10 @@ COPY app/ ./app/
 
 EXPOSE 8000 9999/udp
 
+# Persistent storage for job result files
+RUN mkdir -p /app/storage/results
+VOLUME /app/storage
+
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=15s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" || exit 1
 

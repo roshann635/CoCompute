@@ -11,6 +11,11 @@ class WorkerCreate(BaseModel):
     ram_total: float
     disk_total: float
     platform: str
+    cpu_model: Optional[str] = None
+    cpu_frequency: Optional[float] = None
+    mac_address: Optional[str] = None
+    agent_version: Optional[str] = "1.0.0"
+    python_version: Optional[str] = None
     api_key: str = "cocompute-worker-key"
 
 
@@ -23,6 +28,11 @@ class WorkerResponse(BaseModel):
     ram_total: float
     disk_total: float
     platform: str
+    cpu_model: Optional[str]
+    cpu_frequency: Optional[float]
+    mac_address: Optional[str]
+    agent_version: Optional[str]
+    python_version: Optional[str]
     status: str
     cpu_utilization: float
     ram_usage: float

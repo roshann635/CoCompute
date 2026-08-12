@@ -45,27 +45,19 @@ services:
       AI_MODEL_PATH: /app/model.pkl
       MASTER_DISCOVERY_IP: master
       # FR-14: Load rebalancing thresholds
-      HIGH_UTILIZATION_THRESHOLD: "85.0"
-      HIGH_RAM_THRESHOLD: "90.0"
+      HIGH_UTILIZATION_THRESHOLD: "95.0"
+      HIGH_RAM_THRESHOLD: "99.0"
       HEARTBEAT_TIMEOUT_SECONDS: "15"
       MAX_RETRIES: "3"
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /app/storage
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-
-  # ─── Worker Node (scale with --scale worker=N) ───
-  worker:
-    build: ./worker
-    environment:
-      MASTER_IP: master
-      MASTER_PORT: 8000
-      WORKER_API_KEY: cocompute-worker-key
-      HEARTBEAT_INTERVAL: "5"
+      redis:
+        condition: service_healthy
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - master
+      - storage_data:/app/storage
     restart: unless-stopped
 
   # ─── Dashboard (React + Nginx) ───
@@ -80,3 +72,4 @@ services:
 
 volumes:
   pgdata:
+  storage_data:

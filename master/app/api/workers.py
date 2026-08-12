@@ -28,6 +28,11 @@ def register_worker(worker: schemas.WorkerCreate, db: Session = Depends(database
         db_worker.ram_total = worker.ram_total
         db_worker.disk_total = worker.disk_total
         db_worker.platform = worker.platform
+        db_worker.cpu_model = worker.cpu_model
+        db_worker.cpu_frequency = worker.cpu_frequency
+        db_worker.mac_address = worker.mac_address
+        db_worker.agent_version = worker.agent_version
+        db_worker.python_version = worker.python_version
         db_worker.last_seen = datetime.now(timezone.utc)
     else:
         # Create new worker
@@ -39,6 +44,11 @@ def register_worker(worker: schemas.WorkerCreate, db: Session = Depends(database
             ram_total=worker.ram_total,
             disk_total=worker.disk_total,
             platform=worker.platform,
+            cpu_model=worker.cpu_model,
+            cpu_frequency=worker.cpu_frequency,
+            mac_address=worker.mac_address,
+            agent_version=worker.agent_version,
+            python_version=worker.python_version,
             status="online"
         )
         db.add(db_worker)

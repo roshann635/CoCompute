@@ -41,6 +41,11 @@ class Worker(Base):
     disk_usage = Column(Float, default=0.0)
     network_speed = Column(Float, default=0.0)  # Mbps
     platform = Column(String(100))
+    cpu_model = Column(String(255), nullable=True)
+    cpu_frequency = Column(Float, nullable=True)
+    mac_address = Column(String(100), nullable=True)
+    agent_version = Column(String(20), default="1.0.0")
+    python_version = Column(String(20), nullable=True)
     reliability_score = Column(Float, default=1.0)  # 0.0 to 1.0
     total_tasks_completed = Column(Integer, default=0)
     total_tasks_failed = Column(Integer, default=0)

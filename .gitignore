@@ -218,3 +218,6 @@ cocompute_outputs/
 cocompute_cache/
 *.cocompute
 task_history.db
+cocompute.db
+storage/
+model.pkl

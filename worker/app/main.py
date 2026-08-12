@@ -5,7 +5,10 @@ import os
 import httpx
 import websockets
 import json
+import threading
 from datetime import datetime, timezone
+import argparse
+import sys
 
 from .network.discovery import discover_master
 from .monitor.metrics import get_hardware_info, get_current_metrics, increment_running_tasks, decrement_running_tasks
@@ -20,6 +23,12 @@ WORKER_API_KEY = os.getenv("WORKER_API_KEY", "cocompute-worker-key")
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "5"))
 USE_TLS = os.getenv("USE_TLS", "false").lower() == "true"
 TLS_VERIFY = os.getenv("TLS_VERIFY", "false").lower() == "true"
+
+# GUI Signal reference and loop hooks
+gui_signals = None
+connection_task = None
+background_loop = None
+async_thread = None
 
 
 async def register_with_master(master_ip: str, http_port: int) -> bool:
@@ -52,9 +61,16 @@ async def heartbeat_loop(websocket):
             }
             await websocket.send(json.dumps(payload))
             logger.debug(f"Heartbeat sent. CPU={metrics['cpu_usage']}% RAM={metrics['ram_usage']}% Tasks={metrics['running_tasks']}")
+            
+            # Update GUI metrics if signals are connected
+            if gui_signals:
+                gui_signals.metrics_updated.emit(metrics)
+                
             await asyncio.sleep(HEARTBEAT_INTERVAL)
         except websockets.exceptions.ConnectionClosed:
             logger.error("WebSocket connection closed. Stopping heartbeats.")
+            if gui_signals:
+                gui_signals.status_changed.emit("disconnected")
             break
         except Exception as e:
             logger.error(f"Error in heartbeat loop: {e}")
@@ -76,6 +92,8 @@ async def task_listener_loop(websocket):
                 asyncio.create_task(handle_task_execution(websocket, chunk_id, task_payload))
 
         except websockets.exceptions.ConnectionClosed:
+            if gui_signals:
+                gui_signals.status_changed.emit("disconnected")
             break
         except Exception as e:
             logger.error(f"Error receiving WS message: {e}")
@@ -86,6 +104,11 @@ async def handle_task_execution(websocket, chunk_id: int, task_payload: dict):
     """Execute a task and submit the result back to master."""
     increment_running_tasks()
     start_time = datetime.now(timezone.utc)
+    
+    if gui_signals:
+        gui_signals.task_started.emit({"chunk_id": chunk_id, "type": task_payload.get("type", "python")})
+        gui_signals.status_changed.emit("busy")
+
     try:
         logger.info(f"Starting execution of chunk {chunk_id}")
         result = await execute_task(task_payload, chunk_id)
@@ -133,6 +156,9 @@ async def handle_task_execution(websocket, chunk_id: int, task_payload: dict):
         )
     finally:
         decrement_running_tasks()
+        if gui_signals:
+            gui_signals.task_completed.emit({"chunk_id": chunk_id})
+            gui_signals.status_changed.emit("connected")
 
 
 async def connect_websocket(master_ip: str, ws_port: int):
@@ -151,27 +177,122 @@ async def connect_websocket(master_ip: str, ws_port: int):
     while True:
         try:
             logger.info(f"Connecting to Master WebSocket at {ws_url}...")
+            if gui_signals:
+                gui_signals.status_changed.emit("connecting")
+
             async with websockets.connect(
                 ws_url, ping_interval=20, ping_timeout=10, ssl=ssl_context
             ) as websocket:
                 logger.info("WebSocket connected successfully.")
+                if gui_signals:
+                    gui_signals.status_changed.emit("connected")
 
                 # Run heartbeat and listener concurrently
                 await asyncio.gather(
                     heartbeat_loop(websocket),
                     task_listener_loop(websocket)
                 )
+        except asyncio.CancelledError:
+            logger.info("WebSocket connection cancelled by host request.")
+            if gui_signals:
+                gui_signals.status_changed.emit("disconnected")
+            break
         except Exception as e:
             logger.error(f"WebSocket connection failed: {e}. Retrying in 5 seconds...")
+            if gui_signals:
+                gui_signals.status_changed.emit("disconnected")
             await asyncio.sleep(5)
 
 
-async def main():
+async def agent_main_loop(master_ip: str, master_port: int):
+    """Core loops runner for GUI threads."""
+    global connection_task
+    try:
+        if gui_signals:
+            gui_signals.status_changed.emit("registering")
+        success = await register_with_master(master_ip, master_port)
+        if not success:
+            logger.error("Registration failed.")
+            if gui_signals:
+                gui_signals.status_changed.emit("error")
+            return
+
+        if gui_signals:
+            gui_signals.status_changed.emit("registered")
+
+        connection_task = asyncio.create_task(connect_websocket(master_ip, master_port))
+        await connection_task
+    except asyncio.CancelledError:
+        logger.info("Agent loop cancelled by user.")
+    except Exception as e:
+        logger.error(f"Error in background loops: {e}")
+        if gui_signals:
+            gui_signals.status_changed.emit("error")
+
+
+def start_agent_thread():
+    """Start the background loops runner in a thread."""
+    global async_thread
+    stop_agent_thread()
+
+    def run():
+        global background_loop
+        background_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(background_loop)
+
+        master_ip = os.getenv("MASTER_IP")
+        master_port = os.getenv("MASTER_PORT")
+
+        async def run_discovery():
+            nonlocal master_ip, master_port
+            if not master_ip or not master_port:
+                if gui_signals:
+                    gui_signals.status_changed.emit("discovering")
+                try:
+                    master_info = await discover_master(udp_port=9999)
+                    master_ip = master_info['master_ip']
+                    master_port = master_info['master_ws_port']
+                    if gui_signals:
+                        gui_signals.master_info.emit(master_ip, master_port)
+                except Exception as e:
+                    logger.error(f"Discovery error: {e}")
+                    if gui_signals:
+                        gui_signals.status_changed.emit("error")
+                    return
+            
+            if master_ip and master_port:
+                os.environ["MASTER_IP"] = master_ip
+                os.environ["MASTER_PORT"] = str(master_port)
+                await agent_main_loop(master_ip, int(master_port))
+
+        background_loop.run_until_complete(run_discovery())
+
+    async_thread = threading.Thread(target=run, daemon=True)
+    async_thread.start()
+
+
+def stop_agent_thread():
+    """Cancel connection tasks and stop background threads."""
+    global async_thread, background_loop, connection_task
+    
+    if background_loop:
+        if connection_task and not connection_task.done():
+            background_loop.call_soon_threadsafe(connection_task.cancel)
+        background_loop.call_soon_threadsafe(background_loop.stop)
+        
+    if async_thread:
+        async_thread.join(timeout=2.0)
+        async_thread = None
+    background_loop = None
+    connection_task = None
+
+
+async def main_cli():
+    """CLI mode execution flow."""
     logger.info("=" * 60)
-    logger.info(f"  CoCompute Worker Starting... UID={WORKER_UID}")
+    logger.info(f"  CoCompute CLI Worker Starting... UID={WORKER_UID}")
     logger.info("=" * 60)
 
-    # 1. Discover or use environment configuration
     env_master_ip = os.getenv("MASTER_IP")
     env_master_port = os.getenv("MASTER_PORT")
 
@@ -186,15 +307,41 @@ async def main():
         master_port = master_info['master_ws_port']
         logger.info(f"Discovered Master at {master_ip}:{master_port}")
 
-    # 2. Register
     success = await register_with_master(master_ip, master_port)
     if not success:
         logger.error("Registration failed. Exiting.")
         return
 
-    # 3. Connect via WebSockets and start loops
     await connect_websocket(master_ip, master_port)
 
 
+def main():
+    parser = argparse.ArgumentParser(description="CoCompute Worker Agent")
+    parser.add_argument("--headless", action="store_true", help="Run without PySide6 graphical dashboard")
+    args, unknown = parser.parse_known_args()
+
+    # Determine if GUI is available and requested
+    run_gui = not args.headless
+    if run_gui:
+        try:
+            from PySide6.QtCore import QObject
+            from .ui.gui import run_qt_app, WorkerSignals
+            global gui_signals
+            gui_signals = WorkerSignals()
+        except ImportError:
+            logger.warning("PySide6 is not installed or GUI not supported. Falling back to CLI mode.")
+            run_gui = False
+
+    if run_gui:
+        logger.info("Starting PySide6 Worker Dashboard UI...")
+        # Start backend threads
+        start_agent_thread()
+        # Start Qt Application loop in the main thread (blocking)
+        run_qt_app(gui_signals, stop_agent_thread, start_agent_thread)
+    else:
+        # Run standard CLI asyncio loop
+        asyncio.run(main_cli())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

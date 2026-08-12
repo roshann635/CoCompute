@@ -51,6 +51,53 @@ def _get_disk_usage() -> tuple[float, float]:
     return 0.0, 0.0
 
 
+def _get_cpu_model() -> str:
+    """Cross-platform method to get CPU model name."""
+    import sys
+    system = platform.system()
+    if system == "Windows":
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            model, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            return str(model).strip()
+        except Exception:
+            return platform.processor() or "Unknown CPU"
+    elif system == "Linux":
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if "model name" in line:
+                        return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+    elif system == "Darwin":
+        try:
+            import subprocess
+            return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
+        except Exception:
+            pass
+    return platform.processor() or "Unknown CPU"
+
+
+def _get_mac_address() -> str:
+    """Get the formatted MAC address of the host."""
+    import uuid
+    mac = uuid.getnode()
+    return ':'.join(('%012X' % mac)[i:i+2] for i in range(0, 12, 2))
+
+
+def _get_cpu_frequency() -> float:
+    """Get CPU frequency in GHz."""
+    try:
+        freq = psutil.cpu_freq()
+        if freq:
+            return round((freq.current or freq.max or 0.0) / 1000.0, 2)
+    except Exception:
+        pass
+    return 0.0
+
+
 def get_hardware_info() -> dict:
     """Collect static hardware information for registration (FR-2)."""
     disk_total, _ = _get_disk_usage()
@@ -59,13 +106,19 @@ def get_hardware_info() -> dict:
     except Exception:
         ip = "127.0.0.1"
 
+    import sys
     return {
         "ip_address": ip,
         "hostname": socket.gethostname(),
         "cpu_cores": psutil.cpu_count(logical=True),
         "ram_total": round(psutil.virtual_memory().total / (1024 ** 3), 2),
         "disk_total": disk_total,
-        "platform": f"{platform.system()} {platform.release()}"
+        "platform": f"{platform.system()} {platform.release()}",
+        "cpu_model": _get_cpu_model(),
+        "cpu_frequency": _get_cpu_frequency(),
+        "mac_address": _get_mac_address(),
+        "agent_version": "1.0.0",
+        "python_version": sys.version.split()[0]
     }
 
 

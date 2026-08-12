@@ -18,7 +18,10 @@ def submit_job(
 ):
     """Submit a new job for distributed execution."""
     # Validate job type
-    valid_types = ["prime_generation", "matrix_multiply", "word_count", "generic_python"]
+    valid_types = [
+        "prime_generation", "matrix_multiply", "word_count",
+        "sorting", "image_processing", "compression", "generic_python"
+    ]
     if job_in.job_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"Unsupported job type. Valid types: {valid_types}")
 

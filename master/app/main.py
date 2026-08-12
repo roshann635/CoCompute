@@ -9,7 +9,7 @@ import json
 
 from .db.database import engine, Base, get_db
 from .db import models
-from .api import workers, jobs, metrics, auth, analytics, logs, alerts
+from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files
 from .network.ws_manager import manager
 from .network.discovery import start_discovery_server
 from .engine.scheduler import (
@@ -19,6 +19,10 @@ from .engine.scheduler import (
 from .engine.ai_scheduler import periodic_training_loop
 from .engine.aggregator import try_aggregate_job
 from .engine.analytics import get_cluster_alerts
+from .engine.metrics_engine import (
+    cache_cluster_snapshot, record_metric_point,
+    get_redis_client, update_worker_metrics
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -48,6 +52,7 @@ app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["metrics"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(logs.router, prefix="/api/v1/logs", tags=["logs"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["alerts"])
+app.include_router(files.router, prefix="/api/v1/files", tags=["file-storage"])
 
 # ─── Dashboard live WebSocket connections ───
 # Maps client_id → WebSocket for dashboard /ws/live connections
@@ -71,6 +76,13 @@ async def startup_event():
     logger.info("=" * 60)
     logger.info("  CoCompute Master Node Starting...")
     logger.info("=" * 60)
+
+    # Initialize Redis Metrics Engine
+    redis_client = get_redis_client()
+    if redis_client:
+        logger.info("Metrics Engine: Redis connected successfully.")
+    else:
+        logger.warning("Metrics Engine: Redis unavailable. Running in DB-only mode.")
 
     # Start UDP Discovery Server
     logger.info("Starting UDP Discovery Server on port 9999...")
@@ -165,6 +177,10 @@ async def _dashboard_broadcast_loop():
                     "scheduler_algorithm": get_active_algorithm(),
                 }
                 await _broadcast_to_dashboards(payload)
+
+                # Cache in Redis for fast API reads
+                cache_cluster_snapshot(payload.get("cluster", {}))
+                record_metric_point(payload.get("cluster", {}))
             except Exception as e:
                 logger.error(f"Dashboard broadcast error: {e}")
             finally:
@@ -249,6 +265,9 @@ async def websocket_endpoint(websocket: WebSocket, worker_uid: str):
                     db_worker.ram_usage = m.get("ram_usage", 0)
                     db_worker.disk_usage = m.get("disk_usage", 0)
                     db_worker.running_tasks = m.get("running_tasks", 0)
+
+                    # Cache worker metrics in Redis
+                    update_worker_metrics(worker_uid, m)
 
                     # Store metric record
                     new_metric = models.Metric(

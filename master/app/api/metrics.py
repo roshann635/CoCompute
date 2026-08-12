@@ -89,3 +89,44 @@ def get_worker_metric_history(
         "hostname": worker.hostname,
         "history": history
     }
+
+
+@router.get("/realtime")
+def get_realtime_metrics():
+    """
+    Get real-time cluster metrics from Redis cache.
+    Falls back to an empty response if Redis is unavailable.
+    Sub-millisecond response times when Redis is connected.
+    """
+    from ..engine.metrics_engine import get_cached_snapshot, get_redis_health
+
+    snapshot = get_cached_snapshot()
+    if snapshot:
+        return {"source": "redis_cache", "data": snapshot}
+    return {"source": "unavailable", "data": None, "message": "No cached snapshot available. Data is served via /cluster endpoint."}
+
+
+@router.get("/timeseries")
+def get_timeseries_metrics(minutes: int = Query(default=60, le=1440)):
+    """
+    Get time-series cluster metrics (per-minute aggregates) from Redis.
+    Returns up to `minutes` worth of historical data points.
+    Max: 1440 minutes (24 hours).
+    """
+    from ..engine.metrics_engine import get_timeseries
+
+    points = get_timeseries(minutes=minutes)
+    return {
+        "source": "redis_timeseries",
+        "period_minutes": minutes,
+        "data_points": len(points),
+        "timeseries": points,
+    }
+
+
+@router.get("/redis/health")
+def get_redis_health_status():
+    """Get Redis connection health and status information."""
+    from ..engine.metrics_engine import get_redis_health
+
+    return get_redis_health()

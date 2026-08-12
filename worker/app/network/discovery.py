@@ -36,8 +36,19 @@ class WorkerDiscoveryProtocol(asyncio.DatagramProtocol):
             if message.get("action") == "DISCOVER_RESPONSE":
                 self.discovered = True
                 master_ip = message.get("master_ip")
+                
+                # Network resolution fix: check if master_ip is resolvable. If not, use sender's IP addr[0].
+                try:
+                    if master_ip:
+                        socket.gethostbyname(master_ip)
+                    else:
+                        master_ip = addr[0]
+                except (socket.gaierror, TypeError):
+                    logger.warning(f"Unresolvable master IP received ('{master_ip}'). Falling back to sender's IP: {addr[0]}")
+                    master_ip = addr[0]
+
                 master_ws_port = message.get("master_ws_port")
-                registration_endpoint = message.get("registration_endpoint")
+                registration_endpoint = f"ws://{master_ip}:{master_ws_port}/ws/worker/{WORKER_UID}" if "WORKER_UID" in globals() else message.get("registration_endpoint")
                 
                 logger.info(f"Discovered Master Node at {master_ip}:{master_ws_port}")
                 

@@ -5,7 +5,8 @@ import {
   Shield, Wifi, WifiOff, Loader, LogIn, UserPlus, ChevronDown,
   FileText, Search, RefreshCw, Bell, BellOff, X, Settings,
   ChevronRight, Terminal, Network, Database, Layers, Eye,
-  ArrowUpRight, ArrowDownRight, Gauge, Sliders, Info, AlertCircle
+  ArrowUpRight, ArrowDownRight, Gauge, Sliders, Info, AlertCircle,
+  Download, FileDown
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
@@ -414,6 +415,22 @@ function JobDetailModal({ job, onClose }) {
               </pre>
             </div>
           ) : null}
+
+          {/* Download / Export Buttons */}
+          {result?.aggregated_result && (
+            <div className="flex gap-3 pt-1">
+              <a id="download-json-btn" href={`${API}/files/jobs/${job.id}/download`}
+                className="flex-1 py-2.5 rounded-xl bg-primary/15 border border-primary/30 text-primary hover:bg-primary/25 transition font-medium text-sm flex items-center justify-center gap-2"
+                download>
+                <Download className="w-4 h-4" /> Download JSON
+              </a>
+              <a id="export-csv-btn" href={`${API}/files/jobs/${job.id}/export/csv`}
+                className="flex-1 py-2.5 rounded-xl bg-secondary/15 border border-secondary/30 text-secondary hover:bg-secondary/25 transition font-medium text-sm flex items-center justify-center gap-2"
+                download>
+                <FileDown className="w-4 h-4" /> Export CSV
+              </a>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -426,16 +443,17 @@ function SubmitJobModal({ show, onClose, token }) {
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
   const [loading, setLoading] = useState(false);
+  const [jsonError, setJsonError] = useState('');
 
   const TYPES = {
     prime_generation: {
-      label: 'Prime Generation',
+      label: 'Prime Gen',
       icon: '🔢',
       desc: 'Find prime numbers in a numeric range using parallel sieves',
       defaults: { start: 1, end: 1000000, chunks: 20 }
     },
     matrix_multiply: {
-      label: 'Matrix Multiply',
+      label: 'Matrix Mult',
       icon: '🧮',
       desc: 'Distributed matrix multiplication (row-based parallel split)',
       defaults: { rows_a: 50, cols_a: 50, cols_b: 50, chunks: 10 }
@@ -446,21 +464,70 @@ function SubmitJobModal({ show, onClose, token }) {
       desc: 'MapReduce-style distributed word frequency analysis',
       defaults: { text: 'CoCompute is a distributed computing platform that aggregates idle computational resources from multiple devices into a unified computational network for intelligent resource sharing and parallel task execution across heterogeneous hardware environments', chunks: 5 }
     },
+    sorting: {
+      label: 'Sorting',
+      icon: '📶',
+      desc: 'Parallel sort a large list of random integers',
+      defaults: { array_size: 10000, chunks: 5 }
+    },
+    image_processing: {
+      label: 'Image Filter',
+      icon: '🖼️',
+      desc: 'Distributed image filters (mock base64 pixel processing)',
+      defaults: { images_count: 5, filter_type: 'grayscale', chunks: 2 }
+    },
+    compression: {
+      label: 'Compression',
+      icon: '🗜️',
+      desc: 'Compress blocks of text in parallel using zlib',
+      defaults: { file_size_kb: 500, chunks: 5 }
+    },
     generic_python: {
-      label: 'Generic Python',
+      label: 'Custom User Task',
       icon: '🐍',
-      desc: 'Custom Python script with arbitrary data chunks',
-      defaults: { script: "import sys, json\ndata = json.loads(sys.argv[1])\nresult = sum(data['numbers'])\nprint(json.dumps({'sum': result}))", data_chunks: [{ numbers: [1, 2, 3] }, { numbers: [4, 5, 6] }] }
+      desc: 'Custom user-defined Python script executed across parallel data chunks',
+      defaults: {
+        script: "import sys, json\n\n# Input chunk data passed via CLI argument\ndata = json.loads(sys.argv[1])\nnumbers = data.get('numbers', [])\n\n# Compute result for this chunk\nresult = sum(n * n for n in numbers)\n\n# Print JSON result to stdout\nprint(json.dumps({'sum_of_squares': result, 'count': len(numbers)}))\n",
+        data_chunks: [
+          { numbers: [1, 2, 3, 4, 5] },
+          { numbers: [6, 7, 8, 9, 10] },
+          { numbers: [11, 12, 13, 14, 15] }
+        ]
+      }
     }
+  };
+
+  const [paramsJson, setParamsJson] = useState(JSON.stringify(TYPES['prime_generation'].defaults, null, 2));
+
+  const handleTypeSelect = (type) => {
+    setJobType(type);
+    setParamsJson(JSON.stringify(TYPES[type].defaults, null, 2));
+    setJsonError('');
   };
 
   const submit = async () => {
     setLoading(true);
+    setJsonError('');
+
+    let parsedParams = {};
+    try {
+      parsedParams = JSON.parse(paramsJson);
+    } catch (err) {
+      setJsonError(`JSON Syntax Error: ${err.message}`);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch(`${API}/jobs/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ name: name || `${TYPES[jobType].label} Job`, description: desc || TYPES[jobType].desc, job_type: jobType, params: TYPES[jobType].defaults })
+        body: JSON.stringify({
+          name: name || `${TYPES[jobType].label} Job`,
+          description: desc || TYPES[jobType].desc,
+          job_type: jobType,
+          params: parsedParams
+        })
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail); }
       onClose(); setName(''); setDesc('');
@@ -471,49 +538,59 @@ function SubmitJobModal({ show, onClose, token }) {
   if (!show) return null;
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-center justify-center p-4 backdrop-in" onClick={onClose}>
-      <div className="glass-panel p-6 w-full max-w-lg space-y-5 scale-in" onClick={e => e.stopPropagation()}>
+      <div className="glass-panel p-6 w-full max-w-xl space-y-4 scale-in max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold text-white flex items-center gap-2"><Play className="w-5 h-5 text-primary" /> Submit New Job</h2>
           <button id="submit-job-close" onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 transition text-gray-400"><X className="w-4 h-4" /></button>
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 mb-2 block uppercase tracking-wider">Job Name</label>
+          <label className="text-xs text-gray-400 mb-1.5 block uppercase tracking-wider">Job Name</label>
           <input id="job-name" value={name} onChange={e => setName(e.target.value)} placeholder={`${TYPES[jobType].label} Job`}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-primary transition text-sm" />
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-primary transition text-sm" />
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 mb-2 block uppercase tracking-wider">Job Type</label>
-          <div className="grid grid-cols-2 gap-2">
+          <label className="text-xs text-gray-400 mb-1.5 block uppercase tracking-wider">Job Type Mode</label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {Object.entries(TYPES).map(([type, info]) => (
-              <button key={type} id={`job-type-${type}`} onClick={() => setJobType(type)}
-                className={`px-3 py-2.5 rounded-xl text-sm font-medium border transition-all duration-200 text-left flex items-center gap-2 ${jobType === type ? 'bg-primary/15 border-primary/50 text-primary' : 'bg-white/3 border-white/10 text-gray-300 hover:border-white/20'}`}>
-                <span>{info.icon}</span> {info.label}
+              <button key={type} id={`job-type-${type}`} onClick={() => handleTypeSelect(type)}
+                className={`px-3 py-2 rounded-xl text-xs font-medium border transition-all duration-200 text-left flex items-center gap-2 ${jobType === type ? 'bg-primary/20 border-primary/60 text-primary' : 'bg-white/3 border-white/10 text-gray-300 hover:border-white/20'}`}>
+                <span>{info.icon}</span> <span className="truncate">{info.label}</span>
               </button>
             ))}
           </div>
-          <p className="text-xs text-gray-500 mt-2">{TYPES[jobType].desc}</p>
+          <p className="text-xs text-gray-400 mt-2">{TYPES[jobType].desc}</p>
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 mb-2 block uppercase tracking-wider">Parameters (read-only preview)</label>
-          <pre className="bg-black/30 rounded-xl p-3 text-xs text-gray-400 overflow-auto max-h-28 font-mono border border-white/5">
-            {JSON.stringify(TYPES[jobType].defaults, null, 2)}
-          </pre>
+          <div className="flex justify-between items-center mb-1.5">
+            <label className="text-xs text-gray-400 block uppercase tracking-wider">
+              {jobType === 'generic_python' ? '🐍 Custom Script & Data Chunks (Editable JSON)' : '⚙️ Custom Task Parameters (Editable JSON)'}
+            </label>
+            <button type="button" onClick={() => { setParamsJson(JSON.stringify(TYPES[jobType].defaults, null, 2)); setJsonError(''); }}
+              className="text-[11px] text-primary hover:underline transition">
+              Reset Defaults
+            </button>
+          </div>
+          <textarea id="job-params-editor" rows={7} value={paramsJson}
+            onChange={e => { setParamsJson(e.target.value); setJsonError(''); }}
+            className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-emerald-400 font-mono outline-none focus:ring-2 focus:ring-primary transition resize-y" />
+          {jsonError && <p className="text-red-400 text-xs mt-1 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-1.5">{jsonError}</p>}
         </div>
 
         <div className="flex gap-3 pt-1">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-gray-300 hover:bg-white/5 transition font-medium text-sm">Cancel</button>
           <button id="job-submit-btn" onClick={submit} disabled={loading}
             className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-blue-500 text-white font-semibold shadow-lg shadow-primary/20 transition flex items-center justify-center gap-2 disabled:opacity-50 text-sm glow-primary">
-            {loading ? <Loader className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />} Submit
+            {loading ? <Loader className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />} Submit Task
           </button>
         </div>
       </div>
     </div>
   );
 }
+
 
 // ─── Scheduler Config Panel ──────────────────────────────────────────────────
 function SchedulerPanel({ currentAlgo, onClose }) {

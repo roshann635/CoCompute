@@ -36,21 +36,23 @@ CoCompute is a production-inspired distributed computing platform that aggregate
 - **Password Hashing** — bcrypt via passlib
 - **Role-Based Access** — Admin/User roles (first user = admin)
 
-### Analytics
+### Analytics & Metrics Engine
 - **Speedup** — `T_sequential / T_parallel` per job
 - **Efficiency** — `Speedup / N_workers`
 - **Throughput** — Jobs/chunks per hour
 - **Worker Rankings** — Composite score from reliability, speed, completed tasks
 - **Scheduler Comparison** — Side-by-side algorithm performance analysis
 - **Failure Statistics** — Chunk/job failure rates, retry counts
+- **Redis Metrics Engine** — Real-time time-series caching & historical resource recording
 
-### Dashboard
+### Dashboard & Desktop UI
 - **Auth Screen** — Login/Register with JWT
 - **Cluster Overview** — Real-time nodes, cores, RAM, efficiency
 - **Resource Charts** — Live CPU/RAM/Disk utilization from real metrics
 - **Task Monitoring** — Job table with progress bars, status, pie chart
 - **Analytics Panel** — Speedup charts, worker rankings table
 - **Worker Cards** — Dynamic Online/Offline/Busy badges, utilization bars
+- **Desktop Control Panel** — Tkinter-based system tray & GUI node manager
 
 ---
 
@@ -72,7 +74,7 @@ CoCompute is a production-inspired distributed computing platform that aggregate
 │  │Discovery │ │ WS Manager │ │ Fault Tol│ │ Job Engine│  │
 │  │ UDP 9999 │ └────────────┘ └──────────┘ └───────────┘  │
 │  └──────────┘                                             │
-│                    PostgreSQL + SQLAlchemy                 │
+│               PostgreSQL + SQLAlchemy + Redis             │
 └──────────────────────────────────────────────────────────┘
          │ UDP Discovery    │ WebSocket        │ HTTP
 ┌────────▼────┐      ┌──────▼──────┐    ┌─────▼──────┐
@@ -111,14 +113,15 @@ CoCompute is a production-inspired distributed computing platform that aggregate
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.10, FastAPI, AsyncIO, WebSockets |
+| Backend | Python 3.10+, FastAPI, AsyncIO, WebSockets |
 | Networking | TCP/HTTP, UDP Broadcast, WebSocket |
 | Database | PostgreSQL 15, SQLAlchemy ORM |
-| Caching | Redis 7 (provisioned) |
+| Caching & Metrics | Redis 7 (time-series metrics engine) |
 | Auth | JWT (PyJWT), bcrypt (passlib) |
 | ML | scikit-learn (Random Forest), pandas, numpy |
 | Monitoring | psutil |
 | Dashboard | React 19, Vite, TailwindCSS 4, Recharts, Lucide Icons |
+| Desktop UI | Tkinter system tray & worker control GUI |
 | Containerization | Docker, Docker Compose |
 | Web Server | Nginx (dashboard proxy) |
 
@@ -143,7 +146,7 @@ docker-compose up --build --scale worker=5
 
 ### Option 2: Manual Setup
 
-**Prerequisites**: Python 3.10+, Node.js 18+, PostgreSQL
+**Prerequisites**: Python 3.10+, Node.js 18+, PostgreSQL, Redis
 
 1. **Database**:
    ```bash
@@ -199,16 +202,13 @@ docker-compose up --build --scale worker=5
 | GET | `/api/v1/jobs/` | List all jobs |
 | GET | `/api/v1/jobs/{id}` | Job details |
 | GET | `/api/v1/jobs/{id}/result` | Aggregated result |
+| GET | `/api/v1/jobs/{id}/download` | Download result file |
 
-### Metrics
+### Metrics & Analytics
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/api/v1/metrics/cluster` | Real-time cluster overview |
 | GET | `/api/v1/metrics/workers/{id}/history` | Worker metric history |
-
-### Analytics
-| Method | Endpoint | Description |
-|---|---|---|
 | GET | `/api/v1/analytics/speedup` | Speedup per job |
 | GET | `/api/v1/analytics/efficiency` | Cluster efficiency |
 | GET | `/api/v1/analytics/throughput` | Throughput stats |
@@ -222,58 +222,86 @@ docker-compose up --build --scale worker=5
 
 ```
 CoCompute/
-├── docker-compose.yml
-├── README.md
-├── master/
+├── docker-compose.yml           # Complete container orchestration stack
+├── docker-compose.ssl.yml       # Production TLS deployment stack
+├── README.md                    # Project documentation
+├── .env.example                 # Environment variables configuration template
+├── master/                      # Central Coordinator Node
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py              # FastAPI entry point
-│       ├── api/
-│       │   ├── auth.py          # Authentication endpoints
-│       │   ├── workers.py       # Worker management
-│       │   ├── jobs.py          # Job submission & results
-│       │   ├── metrics.py       # Real-time metrics
-│       │   └── analytics.py     # Performance analytics
+│       ├── main.py              # FastAPI entry point & WS router
+│       ├── api/                 # REST endpoints
+│       │   ├── auth.py          # JWT authentication
+│       │   ├── workers.py       # Worker node management
+│       │   ├── jobs.py          # Job submission & task tracking
+│       │   ├── metrics.py       # Cluster resource metrics
+│       │   ├── analytics.py     # Speedup & efficiency analytics
+│       │   └── files.py         # Output download & result export API
 │       ├── core/
-│       │   └── security.py      # JWT, bcrypt, API keys
+│       │   └── security.py      # Auth, password hashing, API keys
 │       ├── db/
-│       │   ├── database.py      # PostgreSQL connection
-│       │   └── models.py        # 10 SQLAlchemy models
-│       ├── engine/
-│       │   ├── scheduler.py     # Unified scheduler (RR/RA/AI)
-│       │   ├── ai_scheduler.py  # Random Forest ML model
-│       │   ├── round_robin.py   # Round Robin algorithm
-│       │   ├── jobs.py          # Job chunk generators
-│       │   ├── aggregator.py    # Result aggregation
-│       │   └── analytics.py     # Analytics computations
+│       │   ├── database.py      # Database session & engine
+│       │   └── models.py        # SQLAlchemy relational schemas
+│       ├── engine/              # Core algorithmic engines
+│       │   ├── scheduler.py     # Unified task scheduling dispatch
+│       │   ├── ai_scheduler.py  # Random Forest ML predictor
+│       │   ├── round_robin.py   # Round-robin distribution
+│       │   ├── jobs.py          # Task chunking & workflow generators
+│       │   ├── aggregator.py    # Multi-strategy result merger
+│       │   ├── analytics.py     # Performance metric math
+│       │   └── metrics_engine.py# Time-series Redis metrics storage
 │       ├── network/
-│       │   ├── discovery.py     # UDP discovery server
-│       │   └── ws_manager.py    # WebSocket manager
-│       └── schemas/
+│       │   ├── discovery.py     # UDP auto-discovery service
+│       │   └── ws_manager.py    # Bidirectional WebSocket manager
+│       └── schemas/             # Pydantic validation models
 │           ├── auth.py
 │           ├── worker.py
 │           └── job.py
-├── worker/
+├── worker/                      # Distributed Compute Worker Node
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py              # Worker entry point
+│       ├── main.py              # Worker service entry point
 │       ├── execution/
-│       │   └── docker_engine.py # Docker + subprocess executor
+│       │   └── docker_engine.py # Sandboxed Docker & fallback executor
 │       ├── monitor/
-│       │   └── metrics.py       # psutil + temperature + task count
-│       └── network/
-│           └── discovery.py     # UDP broadcast client
-├── dashboard/
+│       │   └── metrics.py       # Hardware resource monitoring (psutil)
+│       ├── network/
+│       │   └── discovery.py     # UDP broadcast auto-discovery client
+│       └── ui/
+│           └── gui.py           # Tkinter desktop control panel & tray
+├── dashboard/                   # Web Control Center (React + Vite)
 │   ├── Dockerfile
 │   ├── nginx.conf
 │   ├── package.json
 │   └── src/
-│       ├── App.jsx              # Full dashboard application
-│       ├── index.css            # TailwindCSS theme
+│       ├── App.jsx              # Full-featured cluster dashboard
+│       ├── index.css            # Styling system
 │       └── main.jsx
-└── shared/                      # Future: shared protocols
+├── tests/                       # Automated Test Suite
+│   ├── test_scheduler.py        # Scheduling logic tests
+│   ├── test_jobs.py             # Job creation and chunking tests
+│   ├── test_aggregator.py       # Result aggregation tests
+│   ├── test_analytics.py        # Analytics computation tests
+│   ├── test_storage_and_metrics.py
+│   └── test_worker_metrics.py
+├── scripts/                     # Cluster testing and simulation
+│   └── simulate_nodes.py        # Multi-node worker load simulator
+├── ssl/                         # Security & TLS Certificate automation
+│   ├── generate_certs.ps1       # Automated certificate generator
+│   └── README.md
+└── docs/                        # Architecture & Developer documentation
+```
+
+---
+
+## Running Tests
+
+Execute the test suite using `pytest`:
+
+```bash
+pytest tests/ -v
 ```
 
 ---

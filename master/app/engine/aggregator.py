@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from ..db import models
+from ..storage.file_store import save_result_file
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,66 @@ def aggregate_generic_results(results: list[dict]) -> dict:
     return {"results": collected}
 
 
+def aggregate_sorting_results(results: list[dict]) -> dict:
+    """Merge sorting results: combine and sort the lists."""
+    import heapq
+    sorted_lists = []
+    for r in results:
+        data = r.get("result_data", {})
+        if isinstance(data, dict):
+            nums = data.get("sorted_numbers", [])
+            sorted_lists.append(nums)
+    merged = list(heapq.merge(*sorted_lists))
+    return {
+        "sorted_array": merged[:100],  # preview first 100
+        "total_elements": len(merged),
+        "is_sorted": all(merged[i] <= merged[i+1] for i in range(len(merged)-1))
+    }
+
+
+def aggregate_image_processing_results(results: list[dict]) -> dict:
+    """Merge image processing results: reassemble images by ID."""
+    all_images = []
+    for r in results:
+        data = r.get("result_data", {})
+        if isinstance(data, dict):
+            imgs = data.get("processed_images", [])
+            all_images.extend(imgs)
+    all_images.sort(key=lambda x: x.get("id", 0))
+    return {
+        "images": all_images,
+        "total_processed": len(all_images)
+    }
+
+
+def aggregate_compression_results(results: list[dict]) -> dict:
+    """Merge compression results: calculate saving ratio and collect chunk summaries."""
+    chunks_info = []
+    total_compressed_bytes = 0
+    total_original_bytes = 0
+    for r in results:
+        data = r.get("result_data", {})
+        if isinstance(data, dict):
+            comp_data = data.get("compressed_data", "")
+            orig_len = data.get("original_length", 0)
+            comp_len = len(comp_data)
+            total_compressed_bytes += comp_len
+            total_original_bytes += orig_len
+            chunks_info.append({
+                "chunk_index": r.get("chunk_index", -1),
+                "original_length": orig_len,
+                "compressed_length": comp_len
+            })
+    chunks_info.sort(key=lambda x: x["chunk_index"])
+    ratio = round((1 - (total_compressed_bytes / max(total_original_bytes, 1))) * 100, 2)
+    return {
+        "chunks": chunks_info,
+        "total_original_bytes": total_original_bytes,
+        "total_compressed_bytes": total_compressed_bytes,
+        "compression_ratio_savings_percent": ratio
+    }
+
+
 def try_aggregate_job(db: Session, job_id: int) -> bool:
     """
     Attempt to aggregate results for a job.
@@ -136,6 +197,12 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
             aggregated = aggregate_matrix_results(results)
         elif job.job_type == "word_count":
             aggregated = aggregate_word_count_results(results)
+        elif job.job_type == "sorting":
+            aggregated = aggregate_sorting_results(results)
+        elif job.job_type == "image_processing":
+            aggregated = aggregate_image_processing_results(results)
+        elif job.job_type == "compression":
+            aggregated = aggregate_compression_results(results)
         elif job.job_type == "generic_python":
             aggregated = aggregate_generic_results(results)
         else:
@@ -164,5 +231,24 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
         task.status = job.status
 
     db.commit()
+
+    # Auto-save result to file storage for download
+    try:
+        save_result_file(
+            job_id=job_id,
+            job_name=job.name or f"job_{job_id}",
+            job_type=job.job_type or "unknown",
+            aggregated_result=aggregated,
+            metadata={
+                "status": job.status,
+                "total_tasks": job.total_tasks,
+                "completed_tasks": len(completed_chunks),
+                "failed_tasks": len(failed_chunks),
+                "end_time": job.end_time.isoformat() if job.end_time else None,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to auto-save result file for job {job_id}: {e}")
+
     logger.info(f"Job {job_id} aggregation complete. Status: {job.status}")
     return True
