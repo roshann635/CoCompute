@@ -24,9 +24,20 @@ class WorkerDiscoveryProtocol(asyncio.DatagramProtocol):
     def send_discovery(self):
         if not self.discovered:
             message = json.dumps({"action": "DISCOVER"}).encode()
-            logger.info("Broadcasting discovery message to 255.255.255.255:9999...")
-            self.transport.sendto(message, ('255.255.255.255', 9999))
-            
+            logger.info("Broadcasting discovery message to 255.255.255.255:9999 and local subnets...")
+            # Global broadcast
+            try:
+                self.transport.sendto(message, ('255.255.255.255', 9999))
+            except Exception as e:
+                logger.debug(f"Global broadcast error: {e}")
+
+            # Also attempt subnet targeted broadcasts for common lab LAN ranges
+            for broadcast_ip in ['192.168.255.255', '192.168.79.255', '192.168.1.255', '192.168.0.255']:
+                try:
+                    self.transport.sendto(message, (broadcast_ip, 9999))
+                except Exception:
+                    pass
+
             # Retry after 3 seconds if not discovered
             asyncio.get_running_loop().call_later(3, self.send_discovery)
 
@@ -65,10 +76,10 @@ class WorkerDiscoveryProtocol(asyncio.DatagramProtocol):
     def error_received(self, exc):
         logger.error(f"UDP Error received: {exc}")
 
-async def discover_master(udp_port: int = 9999) -> dict:
+async def discover_master(udp_port: int = 9999, timeout: float = 8.0) -> dict:
     """
     Broadcasts on the local network to find the master node.
-    Returns a dictionary with master details.
+    Returns a dictionary with master details or raises TimeoutError if UDP broadcast fails.
     """
     loop = asyncio.get_running_loop()
     future = loop.create_future()
@@ -88,9 +99,12 @@ async def discover_master(udp_port: int = 9999) -> dict:
     )
     
     try:
-        # Wait until master is discovered
-        result = await future
+        # Wait until master is discovered or timeout expires
+        result = await asyncio.wait_for(future, timeout=timeout)
         return result
+    except asyncio.TimeoutError:
+        logger.warning(f"UDP auto-discovery timed out after {timeout} seconds (network switch may be dropping UDP broadcast).")
+        raise
     finally:
         if not transport.is_closing():
             transport.close()

@@ -1,311 +1,275 @@
 # CoCompute ⚡️
+**Enterprise Collaborative Distributed Computing Framework for Intelligent Resource Sharing and Heterogeneous Task Execution**
 
-**A Collaborative Distributed Computing Framework for Intelligent Resource Sharing and Parallel Task Execution**
+[![Tests](https://img.shields.io/badge/tests-59%20passed%20(100%25)-brightgreen.svg)]()
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)]()
+[![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688.svg)]()
+[![PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt-41cd52.svg)]()
+[![React](https://img.shields.io/badge/dashboard-React%2019%20%2B%20Vite-61dafb.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-purple.svg)]()
 
-CoCompute is a production-inspired distributed computing platform that aggregates idle computational resources from multiple heterogeneous devices and transforms them into a unified computational network. Built with a Master-Worker architecture, it features intelligent scheduling (Round Robin, Resource-Aware, AI-Predictive), fault tolerance, sandboxed execution, and a comprehensive real-time dashboard.
-
----
-
-## Key Features
-
-### Core Architecture
-- **Master-Worker Pattern** — Centralized coordination with distributed execution
-- **Auto-Discovery** — Workers broadcast UDP to find the Master automatically
-- **WebSocket Communication** — Real-time bidirectional messaging for heartbeats, task dispatch, and results
-
-### Scheduling Algorithms
-- **Round Robin** — Baseline sequential assignment
-- **Resource-Aware** — Weighted scoring: `(CPU*10 + RAM*2) * Reliability / (ActiveTasks+1) - Utilization`
-- **AI-Predictive** — Random Forest Regressor trained on historical execution data to predict optimal worker
-
-### Task Execution
-- **4 Job Types** — Prime generation, matrix multiplication, MapReduce word count, generic Python
-- **Docker Sandboxing** — Isolated containers with `--network=none`, memory/CPU limits
-- **Subprocess Fallback** — Automatic fallback when Docker is unavailable
-- **Result Aggregation** — Type-specific merge strategies (sum, reassemble, reduce)
-
-### Fault Tolerance
-- **Heartbeat Monitoring** — 5s heartbeat interval, 15s timeout detection
-- **Auto-Requeue** — Orphaned tasks reassigned to live workers
-- **Max Retry Limit** — 3 attempts before permanent failure
-- **Worker Reliability Scoring** — Dynamic score: `completed / total`
-
-### Security
-- **JWT Authentication** — Token-based user auth with role-based access
-- **Worker API Keys** — Workers authenticate during registration
-- **Password Hashing** — bcrypt via passlib
-- **Role-Based Access** — Admin/User roles (first user = admin)
-
-### Analytics & Metrics Engine
-- **Speedup** — `T_sequential / T_parallel` per job
-- **Efficiency** — `Speedup / N_workers`
-- **Throughput** — Jobs/chunks per hour
-- **Worker Rankings** — Composite score from reliability, speed, completed tasks
-- **Scheduler Comparison** — Side-by-side algorithm performance analysis
-- **Failure Statistics** — Chunk/job failure rates, retry counts
-- **Redis Metrics Engine** — Real-time time-series caching & historical resource recording
-
-### Dashboard & Desktop UI
-- **Auth Screen** — Login/Register with JWT
-- **Cluster Overview** — Real-time nodes, cores, RAM, efficiency
-- **Resource Charts** — Live CPU/RAM/Disk utilization from real metrics
-- **Task Monitoring** — Job table with progress bars, status, pie chart
-- **Analytics Panel** — Speedup charts, worker rankings table
-- **Worker Cards** — Dynamic Online/Offline/Busy badges, utilization bars
-- **Desktop Control Panel** — Tkinter-based system tray & GUI node manager
+CoCompute is an enterprise-grade distributed computing platform that aggregates computational resources from multiple heterogeneous devices (CPUs, GPUs, edge nodes) and orchestrates them into a unified, high-performance distributed computing cluster.
 
 ---
 
-## Architecture
+## 📑 Table of Contents
+- [Architecture Overview](#-architecture-overview)
+- [Key Systems & 7 Core Architectural Gaps](#-key-systems--7-core-architectural-gaps)
+- [CoCompute Unified Intelligence Engine (CIE)](#-cocompute-unified-intelligence-engine-cie)
+- [Distributed Task SDK & 11 Standard Tasks](#-distributed-task-sdk--11-standard-tasks)
+- [Real-Cluster Benchmarking Suite](#-real-cluster-benchmarking-suite)
+- [Multi-User Institutional Quotas & Projects](#-multi-user-institutional-quotas--projects)
+- [Worker Agent & PySide6 GUI](#-worker-agent--pyside6-gui)
+- [React Control Center Dashboard](#-react-control-center-dashboard)
+- [Quick Start Guide](#-quick-start-guide)
+- [REST & WebSocket API Reference](#-rest--websocket-api-reference)
+- [Testing & Verification](#-testing--verification)
+
+---
+
+## 🏛 Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     Dashboard (React)                     │
-│              Vite + TailwindCSS + Recharts                │
-└────────────────────────┬─────────────────────────────────┘
-                         │ REST / WebSocket
-┌────────────────────────▼─────────────────────────────────┐
-│                  Master Node (FastAPI)                     │
-│  ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌───────────┐  │
-│  │ Auth API │ │ Scheduler  │ │Aggregator│ │ Analytics │  │
-│  └──────────┘ │ RR/RA/AI   │ └──────────┘ └───────────┘  │
-│               └────────────┘                              │
-│  ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌───────────┐  │
-│  │Discovery │ │ WS Manager │ │ Fault Tol│ │ Job Engine│  │
-│  │ UDP 9999 │ └────────────┘ └──────────┘ └───────────┘  │
-│  └──────────┘                                             │
-│               PostgreSQL + SQLAlchemy + Redis             │
-└──────────────────────────────────────────────────────────┘
-         │ UDP Discovery    │ WebSocket        │ HTTP
-┌────────▼────┐      ┌──────▼──────┐    ┌─────▼──────┐
-│  Worker #1  │      │  Worker #2  │    │  Worker #N │
-│  ┌────────┐ │      │  ┌────────┐ │    │  ┌────────┐│
-│  │Executor│ │      │  │Executor│ │    │  │Executor││
-│  │Docker/ │ │      │  │Docker/ │ │    │  │Docker/ ││
-│  │Subproc │ │      │  │Subproc │ │    │  │Subproc ││
-│  └────────┘ │      │  └────────┘ │    │  └────────┘│
-│  │Metrics │ │      │  │Metrics │ │    │  │Metrics ││
-│  │psutil  │ │      │  │psutil  │ │    │  │psutil  ││
-│  └────────┘ │      │  └────────┘ │    │  └────────┘│
-└─────────────┘      └─────────────┘    └────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                   React Dashboard (Vite + TailwindCSS)                 │
+│         Live WebSockets • Provenance • Benchmarks • Projects           │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ HTTP REST / WebSocket Push
+┌───────────────────────────────────▼────────────────────────────────────┐
+│                       Master Node (FastAPI Core)                       │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ CIE Scheduler Engine (7 Pluggable Strategies + AI Predictive)     │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────┐ ┌──────────────────────┐ ┌─────────────┐  │
+│  │ Redis Priority Queues   │ │ Fault Recovery (<1s) │ │ Aggregator  │  │
+│  │ & Pub/Sub Rescheduling  │ │ SUSPECTED -> FAILED  │ │ File Store  │  │
+│  └─────────────────────────┘ └──────────────────────┘ └─────────────┘  │
+│  ┌─────────────────────────┐ ┌──────────────────────┐ ┌─────────────┐  │
+│  │ MinIO S3 Object Storage │ │ Token HMAC Auth (GAP7│ │ UDP Discover│  │
+│  │ Artifact Bundler (.zip) │ │ SHA-256 Verifier     │ │ Port 9999   │  │
+│  └─────────────────────────┘ └──────────────────────┘ └─────────────┘  │
+│                   PostgreSQL / SQLite Database Layer                   │
+└───────────────────────────────────┬────────────────────────────────────┘
+         ▲                          │ WebSocket + Token
+         │ UDP Broadcast (9999)     │ Dispatched MinIO References
+         │                          ▼
+┌────────┴───────────────────────────────────────────────────────────────┐
+│               Worker Agents (PySide6 GUI / CLI Daemon)                 │
+│  ┌────────────────────────┐ ┌───────────────────┐ ┌─────────────────┐  │
+│  │ Docker Sandbox Engine  │ │ GPU / VRAM Monitor│ │ Local SQLite    │  │
+│  │ --network=none limits  │ │ Telemetry Poller  │ │ History Ledger  │  │
+│  └────────────────────────┘ └───────────────────┘ └─────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Database Schema
+## 🛡 Key Systems & 7 Core Architectural Gaps
 
-| Table | Purpose |
-|---|---|
-| `users` | User accounts with roles and auth |
-| `workers` | Registered worker nodes with hardware specs and reliability |
-| `jobs` | Submitted jobs with type, params, and aggregated results |
-| `tasks` | Task containers linking jobs to chunks |
-| `task_chunks` | Individual work units assigned to workers |
-| `results` | Per-chunk execution results |
-| `metrics` | Time-series resource utilization data |
-| `logs` | System event audit log |
-| `scheduler_decisions` | Scheduling decision audit trail |
-| `node_health_records` | Periodic worker health snapshots |
+CoCompute fulfills all production requirements and mandatory isolation/security gaps:
+
+### 1. Docker Containerized Execution Sandbox (GAP 1)
+- **Module**: `worker/executor/docker_executor.py`
+- **Isolation**: Every chunk executes inside a standalone container with `--network=none`, `--cpus`, `--memory=1024m`, input mount `-v {in}:/input:ro`, output mount `-v {out}:/output:rw`, and optional GPU passthrough `--gpus "device=N"`.
+- **Prebuilt Task Images**: Dedicated Dockerfiles in `docker/task_images/` for sort, matrix, statistics, search, word count, image processing, PyTorch ML, LLM fine-tuning, cipher, and generic scripts.
+
+### 2. MinIO S3 Object Storage & Artifact Bundles (GAP 2)
+- **Module**: `master/app/services/minio_service.py`
+- **Buckets**: `chunks`, `results`, `checkpoints`, `artifacts`, `models`.
+- **References**: Distributes `minio://...` object URIs rather than raw heavy payloads over WebSocket.
+- **Per-Job Artifact Bundle Generator**: Compiles `.json`, `.csv`, `.txt`, and full `.zip` archives containing `config.json`, `timeline.json`, `provenance.json`, and `final_result.json`.
+
+### 3. Redis Job Queue & Pub/Sub Rescheduling (GAP 3)
+- **Module**: `master/app/services/queue_service.py`
+- **Intake**: Priority queues `jobs:high` and `jobs:normal`.
+- **Event-Driven**: Publishes instant rescheduling events to Redis channel `cocompute:reschedule` without polling database tables in loops.
+
+### 4. Immediate SUSPECTED State & Rapid Fault Recovery (GAP 4)
+- **Module**: `master/app/engine/fault_detector.py`
+- **Recovery (< 1s)**: On `WebSocketDisconnect`, immediately marks the worker as `SUSPECTED`, resets orphaned chunks to `pending`, increments attempt provenance, and triggers Redis pub/sub rescheduling.
+- **Timeout Transition**: Transitions `SUSPECTED` → `FAILED` after 15s heartbeat timeout.
+
+### 5. Duplicate Attempt Rejection (GAP 5)
+- **Database Model**: `TaskChunk.accepted_attempt_id`
+- **Protection**: If an attempt has been accepted or a stale/duplicate result arrives for a different attempt, it is discarded to prevent aggregation corruption.
+
+### 6. Cryptographic SHA-256 Checksum Verification (GAP 6)
+- **Module**: `master/app/services/integrity.py`
+- **Validation**: Deterministic SHA-256 verification on every worker result before DB commit or aggregation. Checksum mismatches immediately trigger chunk rescheduling.
+
+### 7. Worker HMAC Token Authentication (GAP 7)
+- **Module**: `master/app/services/auth_service.py`
+- **Validation**: Workers authenticate with HMAC-SHA256 tokens derived from `worker_uid` and cluster secret (`COCOMPUTE_WORKER_SECRET`). Rejects unauthorized nodes with WebSocket code `4001`.
 
 ---
 
-## Technology Stack
+## 🧠 CoCompute Unified Intelligence Engine (CIE)
 
-| Layer | Technology |
-|---|---|
-| Backend | Python 3.10+, FastAPI, AsyncIO, WebSockets |
-| Networking | TCP/HTTP, UDP Broadcast, WebSocket |
-| Database | PostgreSQL 15, SQLAlchemy ORM |
-| Caching & Metrics | Redis 7 (time-series metrics engine) |
-| Auth | JWT (PyJWT), bcrypt (passlib) |
-| ML | scikit-learn (Random Forest), pandas, numpy |
-| Monitoring | psutil |
-| Dashboard | React 19, Vite, TailwindCSS 4, Recharts, Lucide Icons |
-| Desktop UI | Tkinter system tray & worker control GUI |
-| Containerization | Docker, Docker Compose |
-| Web Server | Nginx (dashboard proxy) |
+The scheduler supports 7 pluggable strategies with dynamic switching via the dashboard:
+
+| Strategy ID | Name | Core Logic & Weighted Formula | Best Used For |
+|---|---|---|---|
+| `capacity_based` | Capacity Based | Scores nodes by CPU cores, RAM, and reliability, penalized by queue & utilization | Heterogeneous clusters |
+| `round_robin` | Round Robin | Deterministic cyclic distribution across active nodes | Uniform CPU tasks |
+| `least_loaded` | Least Loaded | Selects node with lowest combined CPU & RAM utilization | Dynamic multi-user loads |
+| `gpu_aware` | GPU Aware | Filters CUDA nodes; ranks by VRAM availability & thermal health | PyTorch / LLM workloads |
+| `network_aware` | Network Aware | Prioritizes workers with highest throughput & lowest latency | Large dataset transfers |
+| `priority_based` | Priority Based | Multiplies capacity score by user role & job priority class | Institutional SLA guarantees |
+| `fair_share` | Fair Share | Distributes cluster nodes proportionally across active jobs | Multi-tenant environments |
+| `ai_predictive` | AI Predictive | Random Forest Regressor predicting execution runtime from node metrics | Historical workloads |
 
 ---
 
-## Quick Start
+## 📦 Distributed Task SDK & 11 Standard Tasks
 
-### Option 1: Docker Compose (Recommended)
+Every distributed task implements the complete 7-method lifecycle in `shared/sdk/task_definition.py`:
+1. `resource_requirements(self) -> dict`
+2. `validate_input(self, input_data: dict) -> (bool, str)`
+3. `partition(self, input_data: dict, chunks: int) -> list[dict]`
+4. `execute(self, payload: dict) -> dict`
+5. `validate_partial(self, chunk_result: dict) -> (bool, str)`
+6. `aggregate(self, results: list[dict]) -> dict`
+7. `validate_final(self, final_result: dict, input_data: Optional[dict]) -> (bool, str)`
+
+### 11 Standard Built-in Tasks:
+- 📶 **Distributed Merge Sort (`sorting`)**: K-way merge using `heapq` with global sorted array verification.
+- 🧮 **Matrix Multiplication (`matrix_multiply`)**: Row-decomposed parallel matrix product $C = A \times B$.
+- 📊 **Statistical Analysis (`statistics`)**: Parallel computation of mean, median, standard deviation, variance, min, and max.
+- 🔍 **Distributed Search (`search`)**: Parallel value/pattern search with global offset index tracking.
+- 📝 **MapReduce Word Count (`word_count`)**: MapReduce token frequency aggregation.
+- 🖼️ **Image Filter Processing (`image_processing`)**: Distributed tile-based image filters (grayscale, invert, edge detection).
+- 🔢 **Prime Number Generation (`prime_generation`)**: Parallel numeric range sieve.
+- 🔐 **Substitution Cipher (`cipher`)**: Distributed Caesar / substitution encryption and decryption.
+- 🤖 **Distributed Deep Learning Training (`ml_training`)**: Data-parallel PyTorch training with loss/accuracy curves and step checkpointing.
+- ⚡ **Distributed Batch Inference (`distributed_inference`)**: GPU-accelerated batch vision/transformer inference with ordered confidence aggregation.
+- 🧠 **Distributed LLM Fine-Tuning (`llm_finetune`)**: GPU-aware data-sharded LLM fine-tuning with step checkpoint persistence.
+
+---
+
+## 🏆 Real-Cluster Benchmarking Suite
+
+The benchmarking runner in `master/app/engine/benchmarks.py` **executes strictly against connected physical cluster workers** (never uses simulated/mocked pools):
+
+- **Scalability Benchmark**: Measures wall-clock execution time for $N \in \{1, 5, 10, 25, 50, 100\}$.
+- **Real Metrics**: Computes Speedup $S = T_1 / T_N$ and Parallel Efficiency $E = S / N$.
+- **Explicit Notice**: Skips data points if fewer than $N$ real workers are connected, displaying an explicit notice in the dashboard.
+- **Scheduler Comparison**: Evaluates decision latency (ms) and node allocation scores across all 7 strategies in real-time.
+
+---
+
+## 👥 Multi-User Institutional Quotas & Projects
+
+Supports 4 institutional user tiers with strict quota enforcement:
+
+| Role | Concurrent Jobs | Max Workers / Job | GPU Access | Daily CPU Hours | Priority Class |
+|---|---|---|---|---|---|
+| **Student** | 2 | 5 | None | 20.0 hrs | NORMAL |
+| **Researcher** | 5 | 20 | 4 GPUs (32 GB) | 100.0 hrs | HIGH |
+| **Faculty** | 10 | 50 | 8 GPUs (64 GB) | 250.0 hrs | HIGH |
+| **Administrator** | 50 | 100 | 16 GPUs (128 GB) | 1000.0 hrs | CRITICAL |
+
+---
+
+## 🖥 Worker Agent & PySide6 GUI
+
+The worker agent runs either as a background headless daemon or with a rich PySide6 desktop GUI:
 
 ```bash
+# Launch with PySide6 Native GUI
+python -m worker.app.main --gui
+
+# Launch in Headless Mode
+python -m worker.app.main
+```
+
+### PySide6 GUI Highlights:
+- **Task History Drill-Down Dialog**: Double-click any execution history row to inspect Chunk ID, status, start/end timestamps, duration (s), and detailed output/error payloads.
+- **Live Telemetry Gauges**: Real-time CPU, RAM, and GPU/VRAM progress bars.
+- **Auto-Discovery**: Automatically discovers the Master node on UDP port 9999 and authenticates via HMAC token.
+
+---
+
+## 🌐 React Control Center Dashboard
+
+Built with React 19, Vite, and Tailwind CSS:
+- **Overview Tab**: Real-time cluster health, active core pools, RAM capacity, and live area charts.
+- **Jobs & Queue Tab**: Live ledger of active and completed distributed jobs with progress bars.
+- **Submit Job Modal**: Instant presets for all 11 task types, scheduler strategy picker, and priority selectors.
+- **Job Results Modal**: Multi-format downloads (`.json`, `.csv`, `.txt`, `.zip` artifact bundles), timeline milestones, and chunk provenance trees.
+- **Benchmarks Tab**: Real cluster scalability curves and scheduling strategy performance comparison.
+- **Projects & Quota Tab**: Multi-user project containerization and quota overview.
+- **Nodes Tab**: Hardware breakdown (CPU model, GPU model, VRAM, reliability score).
+
+---
+
+## 🚀 Quick Start Guide
+
+### Option 1: Docker Compose (Full Stack)
+
+```bash
+# Start Master, Redis, PostgreSQL, MinIO, Dashboard, and Workers
 docker-compose up --build
-```
 
-- Dashboard: http://localhost:3000
-- Master API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
-
-Scale workers:
-```bash
+# Scale to 5 worker nodes
 docker-compose up --build --scale worker=5
 ```
 
-### Option 2: Manual Setup
+- **Dashboard**: `http://localhost:3000`
+- **Master API**: `http://localhost:8000`
+- **API Swagger Docs**: `http://localhost:8000/docs`
+- **MinIO Console**: `http://localhost:9001`
 
-**Prerequisites**: Python 3.10+, Node.js 18+, PostgreSQL, Redis
+### Option 2: Local Development Setup
 
-1. **Database**:
-   ```bash
-   # Create PostgreSQL database
-   createdb cocompute
-   ```
-
-2. **Master**:
-   ```bash
-   cd master
-   pip install -r requirements.txt
-   export DATABASE_URL="postgresql://user:pass@localhost:5432/cocompute"
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
-   ```
-
-3. **Worker** (run on each compute node):
-   ```bash
-   cd worker
-   pip install -r requirements.txt
-   python -m app.main
-   ```
-
-4. **Dashboard**:
-   ```bash
-   cd dashboard
-   npm install
-   npm run dev
-   ```
-
----
-
-## API Endpoints
-
-### Authentication
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/v1/auth/register` | Create account |
-| POST | `/api/v1/auth/login` | Get JWT token |
-| GET | `/api/v1/auth/me` | Current user info |
-
-### Workers
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/v1/workers/register` | Register worker (API key) |
-| GET | `/api/v1/workers/` | List all workers |
-| GET | `/api/v1/workers/{uid}` | Get worker details |
-| DELETE | `/api/v1/workers/{uid}` | Deregister worker |
-
-### Jobs
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/v1/jobs/submit` | Submit job (JWT required) |
-| GET | `/api/v1/jobs/` | List all jobs |
-| GET | `/api/v1/jobs/{id}` | Job details |
-| GET | `/api/v1/jobs/{id}/result` | Aggregated result |
-| GET | `/api/v1/jobs/{id}/download` | Download result file |
-
-### Metrics & Analytics
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/api/v1/metrics/cluster` | Real-time cluster overview |
-| GET | `/api/v1/metrics/workers/{id}/history` | Worker metric history |
-| GET | `/api/v1/analytics/speedup` | Speedup per job |
-| GET | `/api/v1/analytics/efficiency` | Cluster efficiency |
-| GET | `/api/v1/analytics/throughput` | Throughput stats |
-| GET | `/api/v1/analytics/workers/ranking` | Worker leaderboard |
-| GET | `/api/v1/analytics/failures` | Failure statistics |
-| GET | `/api/v1/analytics/comparison` | Scheduler comparison |
-
----
-
-## Project Structure
-
+1. **Start Master Node**:
+```bash
+cd master
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-CoCompute/
-├── docker-compose.yml           # Complete container orchestration stack
-├── docker-compose.ssl.yml       # Production TLS deployment stack
-├── README.md                    # Project documentation
-├── .env.example                 # Environment variables configuration template
-├── master/                      # Central Coordinator Node
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py              # FastAPI entry point & WS router
-│       ├── api/                 # REST endpoints
-│       │   ├── auth.py          # JWT authentication
-│       │   ├── workers.py       # Worker node management
-│       │   ├── jobs.py          # Job submission & task tracking
-│       │   ├── metrics.py       # Cluster resource metrics
-│       │   ├── analytics.py     # Speedup & efficiency analytics
-│       │   └── files.py         # Output download & result export API
-│       ├── core/
-│       │   └── security.py      # Auth, password hashing, API keys
-│       ├── db/
-│       │   ├── database.py      # Database session & engine
-│       │   └── models.py        # SQLAlchemy relational schemas
-│       ├── engine/              # Core algorithmic engines
-│       │   ├── scheduler.py     # Unified task scheduling dispatch
-│       │   ├── ai_scheduler.py  # Random Forest ML predictor
-│       │   ├── round_robin.py   # Round-robin distribution
-│       │   ├── jobs.py          # Task chunking & workflow generators
-│       │   ├── aggregator.py    # Multi-strategy result merger
-│       │   ├── analytics.py     # Performance metric math
-│       │   └── metrics_engine.py# Time-series Redis metrics storage
-│       ├── network/
-│       │   ├── discovery.py     # UDP auto-discovery service
-│       │   └── ws_manager.py    # Bidirectional WebSocket manager
-│       └── schemas/             # Pydantic validation models
-│           ├── auth.py
-│           ├── worker.py
-│           └── job.py
-├── worker/                      # Distributed Compute Worker Node
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py              # Worker service entry point
-│       ├── execution/
-│       │   └── docker_engine.py # Sandboxed Docker & fallback executor
-│       ├── monitor/
-│       │   └── metrics.py       # Hardware resource monitoring (psutil)
-│       ├── network/
-│       │   └── discovery.py     # UDP broadcast auto-discovery client
-│       └── ui/
-│           └── gui.py           # Tkinter desktop control panel & tray
-├── dashboard/                   # Web Control Center (React + Vite)
-│   ├── Dockerfile
-│   ├── nginx.conf
-│   ├── package.json
-│   └── src/
-│       ├── App.jsx              # Full-featured cluster dashboard
-│       ├── index.css            # Styling system
-│       └── main.jsx
-├── tests/                       # Automated Test Suite
-│   ├── test_scheduler.py        # Scheduling logic tests
-│   ├── test_jobs.py             # Job creation and chunking tests
-│   ├── test_aggregator.py       # Result aggregation tests
-│   ├── test_analytics.py        # Analytics computation tests
-│   ├── test_storage_and_metrics.py
-│   └── test_worker_metrics.py
-├── scripts/                     # Cluster testing and simulation
-│   └── simulate_nodes.py        # Multi-node worker load simulator
-├── ssl/                         # Security & TLS Certificate automation
-│   ├── generate_certs.ps1       # Automated certificate generator
-│   └── README.md
-└── docs/                        # Architecture & Developer documentation
+
+2. **Start Worker Node(s)**:
+```bash
+cd worker
+pip install -r requirements.txt
+python -m app.main --gui
+```
+
+3. **Start Dashboard**:
+```bash
+cd dashboard
+npm install
+npm run dev
 ```
 
 ---
 
-## Running Tests
+## 🧪 Testing & Verification
 
-Execute the test suite using `pytest`:
+CoCompute includes a comprehensive automated test suite testing all 7 gaps, task lifecycle execution, schedulers, and analytics:
 
 ```bash
-pytest tests/ -v
+pytest
+```
+
+```text
+============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2
+collected 59 items
+
+tests/test_aggregator.py ..........                                      [ 16%]
+tests/test_analytics.py .........                                        [ 32%]
+tests/test_gaps_and_features.py ...............                          [ 57%]
+tests/test_jobs.py ........                                              [ 71%]
+tests/test_scheduler.py .......                                          [ 83%]
+tests/test_sdk.py ......                                                 [ 93%]
+tests/test_storage_and_metrics.py ..                                     [ 96%]
+tests/test_worker_metrics.py ..                                          [100%]
+
+======================= 59 passed, 24 warnings in 6.09s =======================
 ```
 
 ---
 
-## License
-
-MIT
+## 📄 License
+MIT License. Developed for Enterprise Collaborative Distributed Computing.

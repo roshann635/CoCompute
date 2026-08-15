@@ -1,21 +1,36 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from datetime import datetime, timezone
+"""
+CoCompute Master Node Application.
+
+Implements:
+  - REST API routes (Auth, Workers, Jobs, Projects, Metrics, Analytics, Benchmarks, Logs, Alerts, Files)
+  - WebSocket worker connections with HMAC token authentication (GAP 7)
+  - Immediate SUSPECTED fault detection on WebSocketDisconnect (< 1s) (GAP 4)
+  - Result ingestion with Duplicate Attempt Protection & SHA-256 Checksum Verification (GAPs 5 & 6)
+  - Live real-time dashboard WebSocket push streaming
+"""
+
 import asyncio
 import logging
 import os
 import json
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 
 from .db.database import engine, Base, get_db
 from .db import models
-from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files
+from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks
 from .network.ws_manager import manager
 from .network.discovery import start_discovery_server
 from .engine.scheduler import (
     unified_scheduler_loop, fault_tolerance_loop,
-    get_active_algorithm, set_active_algorithm
+    get_active_algorithm, set_active_algorithm,
+    reschedule_worker_chunks
 )
+from .engine.fault_detector import fault_detector
 from .engine.ai_scheduler import periodic_training_loop
 from .engine.aggregator import try_aggregate_job
 from .engine.analytics import get_cluster_alerts
@@ -23,6 +38,9 @@ from .engine.metrics_engine import (
     cache_cluster_snapshot, record_metric_point,
     get_redis_client, update_worker_metrics
 )
+from .services.auth_service import verify_worker_token
+from .services.integrity import verify_checksum
+from .services.queue_service import queue_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -32,8 +50,8 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="CoCompute Master Node",
-    description="Collaborative Distributed Computing Framework for Intelligent Resource Sharing and Parallel Task Execution",
-    version="1.0.0"
+    description="Intelligent Distributed Computing Framework for Dynamic Resource-Aware Task Scheduling",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -44,23 +62,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- API Routers ---
+# ── API Routers ──────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(workers.router, prefix="/api/v1/workers", tags=["workers"])
 app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
+app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
 app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["metrics"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
+app.include_router(benchmarks.router, prefix="/api/v1/benchmarks", tags=["benchmarks"])
 app.include_router(logs.router, prefix="/api/v1/logs", tags=["logs"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["alerts"])
 app.include_router(files.router, prefix="/api/v1/files", tags=["file-storage"])
 
-# ─── Dashboard live WebSocket connections ───
-# Maps client_id → WebSocket for dashboard /ws/live connections
+# ── Dashboard live WebSocket connections ─────────────────────────────────────
 _dashboard_connections: dict[str, WebSocket] = {}
 
 
 async def _broadcast_to_dashboards(payload: dict):
-    """Push a message to all connected dashboard clients."""
     disconnected = []
     for cid, ws in _dashboard_connections.items():
         try:
@@ -74,51 +92,45 @@ async def _broadcast_to_dashboards(payload: dict):
 @app.on_event("startup")
 async def startup_event():
     logger.info("=" * 60)
-    logger.info("  CoCompute Master Node Starting...")
+    logger.info("  CoCompute Master Node v2.0 Starting...")
     logger.info("=" * 60)
 
-    # Initialize Redis Metrics Engine
+    # Initialize Redis Metrics Engine & Queues
     redis_client = get_redis_client()
     if redis_client:
-        logger.info("Metrics Engine: Redis connected successfully.")
+        logger.info("Metrics & Queue Engine: Redis connected.")
     else:
-        logger.warning("Metrics Engine: Redis unavailable. Running in DB-only mode.")
+        logger.warning("Metrics & Queue Engine: Redis unavailable. Running in local fallback mode.")
 
     # Start UDP Discovery Server
-    logger.info("Starting UDP Discovery Server on port 9999...")
     discovery_ip = os.getenv("MASTER_DISCOVERY_IP", "0.0.0.0")
     asyncio.create_task(start_discovery_server(discovery_ip, 8000))
 
-    # Start the SINGLE unified scheduler (fixes the dual-scheduler bug)
+    # Start CIE Unified Scheduler
     asyncio.create_task(unified_scheduler_loop())
 
-    # Start fault tolerance monitor
+    # Start Fault Tolerance Monitor
     asyncio.create_task(fault_tolerance_loop())
 
     # Start periodic AI model training
     asyncio.create_task(periodic_training_loop())
 
-    # Start the dashboard live-push broadcast loop
+    # Start dashboard broadcast loop
     asyncio.create_task(_dashboard_broadcast_loop())
 
-    logger.info("All background services started.")
+    logger.info("All CoCompute Master background services initialized.")
 
 
 async def _dashboard_broadcast_loop():
-    """
-    Periodically push cluster snapshot + alerts to all dashboard WebSocket clients.
-    This provides the SRS-specified real-time WebSocket streaming for the dashboard (NFR 5.1).
-    """
-    from .engine.analytics import get_cluster_efficiency, get_resource_utilization_history
+    from .engine.analytics import get_cluster_efficiency
     from .db.database import SessionLocal
 
-    logger.info("Starting Dashboard Live Broadcast Loop...")
     while True:
         if _dashboard_connections:
             db = None
             try:
                 db = SessionLocal()
-                online_workers = db.query(models.Worker).filter(models.Worker.status == "online").all()
+                online_workers = db.query(models.Worker).filter(models.Worker.status.in_(["online", "idle"])).all()
                 offline_count = db.query(models.Worker).filter(models.Worker.status == "offline").count()
                 total_nodes = db.query(models.Worker).count()
                 active_cores = sum(w.cpu_cores or 0 for w in online_workers)
@@ -145,6 +157,10 @@ async def _dashboard_broadcast_loop():
                         "ram_total": w.ram_total,
                         "ram_usage": w.ram_usage,
                         "disk_usage": w.disk_usage,
+                        "gpu_count": w.gpu_count,
+                        "gpu_model": w.gpu_model,
+                        "vram_total": w.vram_total,
+                        "gpu_utilization": w.gpu_utilization,
                         "running_tasks": w.running_tasks,
                         "reliability_score": w.reliability_score,
                         "platform": w.platform,
@@ -178,7 +194,6 @@ async def _dashboard_broadcast_loop():
                 }
                 await _broadcast_to_dashboards(payload)
 
-                # Cache in Redis for fast API reads
                 cache_cluster_snapshot(payload.get("cluster", {}))
                 record_metric_point(payload.get("cluster", {}))
             except Exception as e:
@@ -186,30 +201,29 @@ async def _dashboard_broadcast_loop():
             finally:
                 if db:
                     db.close()
-        await asyncio.sleep(3)
+        await asyncio.sleep(2.5)
 
 
 @app.get("/")
 def root():
     return {
         "name": "CoCompute Master Node",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "running",
         "docs": "/docs"
     }
 
 
-# ─────────────────────────────────────────────
-# Scheduler Runtime Configuration (FR-14 toggle)
-# ─────────────────────────────────────────────
-
+# ── Scheduler Config ─────────────────────────────────────────────────────────
 @app.get("/api/v1/scheduler/config")
 def get_scheduler_config():
-    """Get current scheduler algorithm and thresholds."""
     from .engine.scheduler import HIGH_UTILIZATION_THRESHOLD, HIGH_RAM_THRESHOLD
     return {
         "algorithm": get_active_algorithm(),
-        "valid_algorithms": ["round_robin", "resource_aware", "ai_predictive"],
+        "valid_algorithms": [
+            "round_robin", "least_loaded", "capacity_based", "gpu_aware",
+            "network_aware", "priority_based", "fair_share", "ai_predictive"
+        ],
         "high_utilization_threshold": HIGH_UTILIZATION_THRESHOLD,
         "high_ram_threshold": HIGH_RAM_THRESHOLD,
     }
@@ -217,10 +231,6 @@ def get_scheduler_config():
 
 @app.post("/api/v1/scheduler/config")
 def set_scheduler_config(body: dict):
-    """
-    Runtime toggle for the scheduler algorithm.
-    Allows the dashboard to switch between round_robin, resource_aware, and ai_predictive.
-    """
     algorithm = body.get("algorithm")
     if not algorithm:
         raise HTTPException(status_code=400, detail="'algorithm' field is required")
@@ -231,16 +241,25 @@ def set_scheduler_config(body: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─────────────────────────────────────────────
-# Worker WebSocket (existing)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# WORKER WEBSOCKET ENDPOINT (WITH TOKEN AUTH & DISCONNECT SUSPECTED)
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/worker/{worker_uid}")
-async def websocket_endpoint(websocket: WebSocket, worker_uid: str):
-    db: Session = next(get_db())
-    await manager.connect(websocket, worker_uid)
+async def websocket_endpoint(
+    websocket: WebSocket,
+    worker_uid: str,
+    token: Optional[str] = Query(None)
+):
+    # GAP 7: Worker Token Authentication
+    if token and not verify_worker_token(worker_uid, token):
+        logger.warning(f"Rejected worker connection {worker_uid}: Invalid worker token")
+        await websocket.close(code=4001, reason="Invalid worker token")
+        return
 
-    # Mark worker as online
+    await manager.connect(websocket, worker_uid)
+    db: Session = next(get_db())
+
     db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
     if db_worker:
         db_worker.status = "online"
@@ -252,24 +271,21 @@ async def websocket_endpoint(websocket: WebSocket, worker_uid: str):
             data = await websocket.receive_json()
 
             if data.get("type") == "METRICS":
-                # --- Heartbeat / Metrics Update ---
                 m = data.get("data", {})
-
-                db_worker = db.query(models.Worker).filter(
-                    models.Worker.worker_uid == worker_uid
-                ).first()
+                db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
                 if db_worker:
                     db_worker.last_seen = datetime.now(timezone.utc)
                     db_worker.status = "online"
-                    db_worker.cpu_utilization = m.get("cpu_usage", 0)
-                    db_worker.ram_usage = m.get("ram_usage", 0)
-                    db_worker.disk_usage = m.get("disk_usage", 0)
+                    db_worker.cpu_utilization = m.get("cpu_usage", 0.0)
+                    db_worker.ram_usage = m.get("ram_usage", 0.0)
+                    db_worker.disk_usage = m.get("disk_usage", 0.0)
                     db_worker.running_tasks = m.get("running_tasks", 0)
+                    db_worker.gpu_utilization = m.get("gpu_utilization", 0.0)
+                    db_worker.vram_usage = m.get("vram_usage", 0.0)
+                    db_worker.gpu_temperature = m.get("gpu_temperature")
 
-                    # Cache worker metrics in Redis
                     update_worker_metrics(worker_uid, m)
 
-                    # Store metric record
                     new_metric = models.Metric(
                         worker_id=db_worker.id,
                         cpu_usage=m.get("cpu_usage"),
@@ -277,104 +293,128 @@ async def websocket_endpoint(websocket: WebSocket, worker_uid: str):
                         disk_usage=m.get("disk_usage"),
                         network_tx=m.get("network_tx"),
                         network_rx=m.get("network_rx"),
-                        running_tasks=m.get("running_tasks", 0)
+                        running_tasks=m.get("running_tasks", 0),
+                        gpu_utilization=m.get("gpu_utilization"),
+                        vram_usage=m.get("vram_usage"),
+                        gpu_temperature=m.get("gpu_temperature")
                     )
                     db.add(new_metric)
-
-                    # Store health record
-                    health = models.NodeHealthRecord(
-                        worker_id=db_worker.id,
-                        cpu_usage=m.get("cpu_usage", 0),
-                        ram_usage=m.get("ram_usage", 0),
-                        disk_usage=m.get("disk_usage", 0),
-                        temperature=m.get("temperature"),
-                        network_speed=m.get("network_speed"),
-                        running_tasks=m.get("running_tasks", 0),
-                        is_healthy=True
-                    )
-                    db.add(health)
                     db.commit()
 
             elif data.get("type") == "RESULT":
-                # --- Task Result Submission ---
                 chunk_id = data.get("chunk_id")
+                attempt_id = data.get("attempt_id")
                 result_data = data.get("result_data", {})
+                checksum = data.get("checksum")
 
-                db_chunk = db.query(models.TaskChunk).filter(
-                    models.TaskChunk.id == chunk_id
-                ).first()
+                db_chunk = db.query(models.TaskChunk).filter(models.TaskChunk.id == chunk_id).first()
+                if not db_chunk:
+                    continue
 
-                if db_chunk:
-                    status = result_data.get("status")
-                    db_chunk.end_time = datetime.now(timezone.utc)
+                # GAP 5: Duplicate Attempt Rejection
+                if db_chunk.accepted_attempt_id is not None and (attempt_id and db_chunk.accepted_attempt_id != attempt_id):
+                    logger.info(f"[DuplicateGuard] Late result from attempt {attempt_id} for chunk {chunk_id} discarded. Accepted: {db_chunk.accepted_attempt_id}")
+                    continue
 
-                    # Calculate execution time
-                    exec_time = None
-                    if db_chunk.start_time and db_chunk.end_time:
-                        exec_time = (db_chunk.end_time - db_chunk.start_time).total_seconds()
+                if db_chunk.status == "completed":
+                    logger.info(f"[DuplicateGuard] Chunk {chunk_id} already COMPLETED — ignoring late result.")
+                    continue
 
-                    if status == "success":
-                        db_chunk.status = "completed"
-                    else:
-                        db_chunk.status = "failed"
+                # Stale worker protection
+                db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
+                if not db_worker or db_chunk.worker_id != db_worker.id:
+                    logger.warning(f"[DuplicateGuard] Ignored result for chunk {chunk_id} from unassigned worker {worker_uid}")
+                    continue
 
-                    # Save result
-                    new_result = models.Result(
-                        task_chunk_id=chunk_id,
-                        result_data=result_data.get("result"),
-                        error_log=result_data.get("error"),
-                        execution_time_seconds=exec_time
-                    )
-                    db.add(new_result)
-
-                    # Update worker stats
-                    worker = db.query(models.Worker).filter(
-                        models.Worker.id == db_chunk.worker_id
-                    ).first()
-                    if worker:
-                        if status == "success":
-                            worker.total_tasks_completed += 1
-                        else:
-                            worker.total_tasks_failed += 1
-                        total = worker.total_tasks_completed + worker.total_tasks_failed
-                        worker.reliability_score = worker.total_tasks_completed / max(total, 1)
-
+                # GAP 6: Standalone SHA-256 Checksum Verification
+                raw_result = result_data.get("result")
+                if checksum and not verify_checksum(raw_result, checksum):
+                    logger.error(f"[Integrity] Checksum mismatch for chunk {chunk_id} from {worker_uid}. Rescheduling.")
+                    rescheduled = reschedule_worker_chunks(db, db_worker, reason="checksum_mismatch")
+                    if rescheduled:
+                        queue_service.publish_reschedule(str(db_chunk.task_id), [str(db_chunk.id)], "checksum_mismatch")
                     db.commit()
+                    continue
 
-                    # Try to aggregate results for the parent job
-                    db_task = db.query(models.Task).filter(
-                        models.Task.id == db_chunk.task_id
-                    ).first()
-                    if db_task:
-                        try_aggregate_job(db, db_task.job_id)
+                now = datetime.now(timezone.utc)
+                status_str = result_data.get("status", "success")
+                exec_time = None
+                if db_chunk.start_time:
+                    exec_time = (now - db_chunk.start_time).total_seconds()
+
+                db_chunk.end_time = now
+                db_chunk.checksum = checksum
+
+                if status_str == "success":
+                    db_chunk.status = "completed"
+                    # Mark accepted attempt (GAP 5)
+                    db_chunk.accepted_attempt_id = attempt_id or f"ATT-{chunk_id}-{db_chunk.attempt_count}"
+                else:
+                    db_chunk.status = "failed"
+
+                # Update ChunkAttempt
+                current_attempt = db.query(models.ChunkAttempt).filter(
+                    models.ChunkAttempt.chunk_id == chunk_id,
+                    models.ChunkAttempt.worker_id == db_worker.id
+                ).order_by(models.ChunkAttempt.attempt_number.desc()).first()
+
+                if current_attempt:
+                    current_attempt.status = "completed" if status_str == "success" else "failed"
+                    current_attempt.completed_at = now
+                    current_attempt.duration_seconds = exec_time
+                    current_attempt.checksum = checksum
+                    if status_str != "success":
+                        current_attempt.failure_reason = result_data.get("error", "execution_error")
+                    else:
+                        summary = json.dumps(raw_result)[:500] if raw_result is not None else "success"
+                        current_attempt.result_summary = summary
+
+                # Save Result
+                existing_res = db.query(models.Result).filter(models.Result.task_chunk_id == chunk_id).first()
+                if existing_res:
+                    existing_res.result_data = raw_result
+                    existing_res.checksum = checksum
+                    existing_res.execution_time_seconds = exec_time
+                else:
+                    db.add(models.Result(
+                        task_chunk_id=chunk_id,
+                        result_data=raw_result,
+                        checksum=checksum,
+                        execution_time_seconds=exec_time
+                    ))
+
+                if db_worker:
+                    if status_str == "success":
+                        db_worker.total_tasks_completed += 1
+                    else:
+                        db_worker.total_tasks_failed += 1
+                    tot = db_worker.total_tasks_completed + db_worker.total_tasks_failed
+                    db_worker.reliability_score = db_worker.total_tasks_completed / max(tot, 1)
+
+                db.commit()
+
+                # Trigger Aggregation check
+                task = db.query(models.Task).filter(models.Task.id == db_chunk.task_id).first()
+                if task:
+                    try_aggregate_job(db, task.job_id)
 
     except WebSocketDisconnect:
         manager.disconnect(worker_uid)
-        db_worker = db.query(models.Worker).filter(
-            models.Worker.worker_uid == worker_uid
-        ).first()
-        if db_worker:
-            db_worker.status = "offline"
-            db_worker.running_tasks = 0
-            db.commit()
-        logger.info(f"Worker {worker_uid} disconnected")
+        logger.warning(f"WebSocket disconnected for worker {worker_uid}")
+        # GAP 4: Immediate SUSPECTED state (< 1s) and Redis Pub/Sub notification
+        await fault_detector.mark_suspected(db, worker_uid, reason="WebSocketDisconnect")
+
     except Exception as e:
         logger.error(f"WebSocket error for {worker_uid}: {e}")
         manager.disconnect(worker_uid)
+        await fault_detector.mark_suspected(db, worker_uid, reason=str(e))
     finally:
         db.close()
 
 
-# ─────────────────────────────────────────────
-# Dashboard Live WebSocket (push-based, FR-10 / NFR)
-# ─────────────────────────────────────────────
-
+# ── Dashboard Live WS ────────────────────────────────────────────────────────
 @app.websocket("/ws/live")
 async def dashboard_live_ws(websocket: WebSocket):
-    """
-    WebSocket endpoint for the dashboard to receive real-time cluster updates.
-    Pushes CLUSTER_UPDATE messages every ~3 seconds without polling.
-    """
     import uuid
     client_id = str(uuid.uuid4())
     await websocket.accept()
@@ -382,14 +422,10 @@ async def dashboard_live_ws(websocket: WebSocket):
     logger.info(f"Dashboard client {client_id} connected to /ws/live")
 
     try:
-        # Keep connection alive; the broadcast loop does the pushing
         while True:
-            # Accept any ping/pong or control messages from client
             try:
-                msg = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                # Client can send {"type": "ping"} to keep alive
+                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
             except asyncio.TimeoutError:
-                # Send a keepalive ping
                 await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
         logger.info(f"Dashboard client {client_id} disconnected")

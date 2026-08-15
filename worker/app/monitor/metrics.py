@@ -3,6 +3,8 @@ import socket
 import platform
 import sys
 import threading
+import subprocess
+import json
 
 # Thread-safe running task counter
 _running_tasks = 0
@@ -53,7 +55,6 @@ def _get_disk_usage() -> tuple[float, float]:
 
 def _get_cpu_model() -> str:
     """Cross-platform method to get CPU model name."""
-    import sys
     system = platform.system()
     if system == "Windows":
         try:
@@ -73,7 +74,6 @@ def _get_cpu_model() -> str:
             pass
     elif system == "Darwin":
         try:
-            import subprocess
             return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
         except Exception:
             pass
@@ -98,15 +98,77 @@ def _get_cpu_frequency() -> float:
     return 0.0
 
 
+def _get_gpu_info() -> dict:
+    """
+    Cross-platform GPU information & telemetry detection.
+    Attempts detection via NVML, PyTorch CUDA, and nvidia-smi CLI.
+    """
+    gpu_data = {
+        "gpu_count": 0,
+        "gpu_model": "None",
+        "vram_total": 0.0,      # GB
+        "vram_usage": 0.0,      # %
+        "vram_available": 0.0,  # GB
+        "gpu_utilization": 0.0, # %
+        "gpu_temperature": None,
+        "cuda_available": False
+    }
+
+    # 1. Try PyTorch CUDA if available
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_data["cuda_available"] = True
+            gpu_data["gpu_count"] = torch.cuda.device_count()
+            if gpu_data["gpu_count"] > 0:
+                gpu_data["gpu_model"] = torch.cuda.get_device_name(0)
+                props = torch.cuda.get_device_properties(0)
+                vram_gb = round(props.total_memory / (1024 ** 3), 2)
+                gpu_data["vram_total"] = vram_gb
+                allocated = torch.cuda.memory_allocated(0) / (1024 ** 3)
+                gpu_data["vram_available"] = round(max(0.0, vram_gb - allocated), 2)
+                gpu_data["vram_usage"] = round((allocated / vram_gb * 100) if vram_gb > 0 else 0.0, 1)
+    except Exception:
+        pass
+
+    # 2. Try nvidia-smi CLI for dynamic utilization/temp if GPU found or PyTorch not installed
+    try:
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+            "--format=csv,noheader,nounits"
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+        lines = [line.strip() for line in out.split("\n") if line.strip()]
+        if lines:
+            gpu_data["gpu_count"] = len(lines)
+            gpu_data["cuda_available"] = True
+            # Parse primary GPU
+            parts = [p.strip() for p in lines[0].split(",")]
+            if len(parts) >= 5:
+                gpu_data["gpu_model"] = parts[0]
+                total_mb = float(parts[1])
+                used_mb = float(parts[2])
+                gpu_data["vram_total"] = round(total_mb / 1024.0, 2)
+                gpu_data["vram_available"] = round(max(0.0, (total_mb - used_mb) / 1024.0), 2)
+                gpu_data["vram_usage"] = round((used_mb / total_mb * 100) if total_mb > 0 else 0.0, 1)
+                gpu_data["gpu_utilization"] = float(parts[3])
+                gpu_data["gpu_temperature"] = float(parts[4])
+    except Exception:
+        pass
+
+    return gpu_data
+
+
 def get_hardware_info() -> dict:
     """Collect static hardware information for registration (FR-2)."""
     disk_total, _ = _get_disk_usage()
+    gpu = _get_gpu_info()
     try:
         ip = socket.gethostbyname(socket.gethostname())
     except Exception:
         ip = "127.0.0.1"
 
-    import sys
     return {
         "ip_address": ip,
         "hostname": socket.gethostname(),
@@ -117,17 +179,23 @@ def get_hardware_info() -> dict:
         "cpu_model": _get_cpu_model(),
         "cpu_frequency": _get_cpu_frequency(),
         "mac_address": _get_mac_address(),
-        "agent_version": "1.0.0",
-        "python_version": sys.version.split()[0]
+        "agent_version": "2.0.0",
+        "python_version": sys.version.split()[0],
+        # GPU Specifications
+        "gpu_count": gpu["gpu_count"],
+        "gpu_model": gpu["gpu_model"],
+        "vram_total": gpu["vram_total"],
+        "cuda_available": gpu["cuda_available"]
     }
 
 
 def get_current_metrics() -> dict:
-    """Collect real-time system metrics including temperature and task count (FR-3)."""
+    """Collect real-time system metrics including temperature, GPU, and task count (FR-3)."""
     net_io = psutil.net_io_counters()
     _, disk_percent = _get_disk_usage()
+    gpu = _get_gpu_info()
 
-    # Try to get temperature (not available on all platforms)
+    # Try to get CPU temperature (not available on all platforms)
     temperature = None
     try:
         temps = psutil.sensors_temperatures()
@@ -147,5 +215,10 @@ def get_current_metrics() -> dict:
         "network_rx": round(net_io.bytes_recv / (1024 ** 2), 2),
         "running_tasks": get_running_tasks(),
         "temperature": temperature,
-        "network_speed": round((net_io.bytes_sent + net_io.bytes_recv) / (1024 ** 2), 2)
+        "network_speed": round((net_io.bytes_sent + net_io.bytes_recv) / (1024 ** 2), 2),
+        # GPU Dynamic Telemetry
+        "gpu_utilization": gpu["gpu_utilization"],
+        "vram_usage": gpu["vram_usage"],
+        "vram_available": gpu["vram_available"],
+        "gpu_temperature": gpu["gpu_temperature"]
     }

@@ -14,6 +14,8 @@ from .network.discovery import discover_master
 from .monitor.metrics import get_hardware_info, get_current_metrics, increment_running_tasks, decrement_running_tasks
 from .execution.docker_engine import execute_task
 from .history.task_history import save_task_record
+from master.app.services.integrity import compute_sha256
+from master.app.services.auth_service import generate_worker_token
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -24,7 +26,6 @@ HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "5"))
 USE_TLS = os.getenv("USE_TLS", "false").lower() == "true"
 TLS_VERIFY = os.getenv("TLS_VERIFY", "false").lower() == "true"
 
-# GUI Signal reference and loop hooks
 gui_signals = None
 connection_task = None
 background_loop = None
@@ -38,6 +39,8 @@ async def register_with_master(master_ip: str, http_port: int) -> bool:
     hw_info = get_hardware_info()
     hw_info["worker_uid"] = WORKER_UID
     hw_info["api_key"] = WORKER_API_KEY
+    token = generate_worker_token(WORKER_UID)
+    hw_info["token"] = token
 
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=TLS_VERIFY if USE_TLS else True) as client:
@@ -51,7 +54,7 @@ async def register_with_master(master_ip: str, http_port: int) -> bool:
 
 
 async def heartbeat_loop(websocket):
-    """Send periodic heartbeat with system metrics."""
+    """Send periodic heartbeat with system & GPU metrics."""
     while True:
         try:
             metrics = get_current_metrics()
@@ -60,12 +63,11 @@ async def heartbeat_loop(websocket):
                 "data": metrics
             }
             await websocket.send(json.dumps(payload))
-            logger.debug(f"Heartbeat sent. CPU={metrics['cpu_usage']}% RAM={metrics['ram_usage']}% Tasks={metrics['running_tasks']}")
-            
-            # Update GUI metrics if signals are connected
+            logger.debug(f"Heartbeat sent. CPU={metrics.get('cpu_usage')}% RAM={metrics.get('ram_usage')}% Tasks={metrics.get('running_tasks')}")
+
             if gui_signals:
                 gui_signals.metrics_updated.emit(metrics)
-                
+
             await asyncio.sleep(HEARTBEAT_INTERVAL)
         except websockets.exceptions.ConnectionClosed:
             logger.error("WebSocket connection closed. Stopping heartbeats.")
@@ -85,11 +87,17 @@ async def task_listener_loop(websocket):
             data = json.loads(message)
             if data.get("type") == "EXECUTE":
                 chunk_id = data.get("chunk_id")
+                chunk_uid = data.get("chunk_uid", f"CHUNK-{chunk_id}")
+                attempt_id = data.get("attempt_id")
+                task_type = data.get("task_type", "generic_python")
                 task_payload = data.get("task_payload")
-                logger.info(f"Received task chunk: {chunk_id}")
+                logger.info(f"Received task chunk: {chunk_id} ({chunk_uid}, attempt={attempt_id})")
 
-                # Execute asynchronously
-                asyncio.create_task(handle_task_execution(websocket, chunk_id, task_payload))
+                asyncio.create_task(
+                    handle_task_execution(
+                        websocket, chunk_id, task_payload, chunk_uid, attempt_id, task_type
+                    )
+                )
 
         except websockets.exceptions.ConnectionClosed:
             if gui_signals:
@@ -100,28 +108,46 @@ async def task_listener_loop(websocket):
             break
 
 
-async def handle_task_execution(websocket, chunk_id: int, task_payload: dict):
-    """Execute a task and submit the result back to master."""
+async def handle_task_execution(
+    websocket,
+    chunk_id: int,
+    task_payload: dict,
+    chunk_uid: str = None,
+    attempt_id: str = None,
+    task_type: str = "generic_python"
+):
+    """Execute a task and submit the result back to master with checksum."""
     increment_running_tasks()
     start_time = datetime.now(timezone.utc)
-    
+
     if gui_signals:
-        gui_signals.task_started.emit({"chunk_id": chunk_id, "type": task_payload.get("type", "python")})
+        gui_signals.task_started.emit({
+            "chunk_id": chunk_id,
+            "chunk_uid": chunk_uid or f"CHUNK-{chunk_id}",
+            "type": task_type
+        })
         gui_signals.status_changed.emit("busy")
 
     try:
-        logger.info(f"Starting execution of chunk {chunk_id}")
-        result = await execute_task(task_payload, chunk_id)
+        logger.info(f"Starting execution of chunk {chunk_id} ({chunk_uid})")
+        result = await execute_task(task_payload, chunk_id, task_type=task_type)
         end_time = datetime.now(timezone.utc)
         exec_seconds = (end_time - start_time).total_seconds()
+
+        # Compute SHA-256 Checksum (GAP 6)
+        raw_res = result.get("result")
+        checksum = compute_sha256(raw_res)
 
         payload = {
             "type": "RESULT",
             "chunk_id": chunk_id,
-            "result_data": result
+            "attempt_id": attempt_id,
+            "worker_uid": WORKER_UID,
+            "result_data": result,
+            "checksum": checksum
         }
         await websocket.send(json.dumps(payload))
-        logger.info(f"Submitted result for chunk {chunk_id}: {result.get('status')}")
+        logger.info(f"Submitted result for chunk {chunk_id}: {result.get('status')} (checksum: {checksum})")
 
         # Persist to local task history (FR-11)
         save_task_record(
@@ -133,214 +159,165 @@ async def handle_task_execution(websocket, chunk_id: int, task_payload: dict):
             end_time=end_time.isoformat(),
             execution_time=exec_seconds,
         )
+
+        if gui_signals:
+            gui_signals.task_completed.emit({
+                "chunk_id": chunk_id,
+                "status": result.get("status", "unknown"),
+                "execution_time_seconds": exec_seconds
+            })
+            gui_signals.status_changed.emit("connected")
+
     except Exception as e:
+        logger.error(f"Execution error on chunk {chunk_id}: {e}")
         end_time = datetime.now(timezone.utc)
         exec_seconds = (end_time - start_time).total_seconds()
-        logger.error(f"Error executing chunk {chunk_id}: {e}")
+
+        err_result = {"status": "error", "result": None, "error": str(e)}
+        checksum = compute_sha256(err_result)
+        payload = {
+            "type": "RESULT",
+            "chunk_id": chunk_id,
+            "attempt_id": attempt_id,
+            "worker_uid": WORKER_UID,
+            "result_data": err_result,
+            "checksum": checksum
+        }
         try:
-            await websocket.send(json.dumps({
-                "type": "RESULT",
-                "chunk_id": chunk_id,
-                "result_data": {"status": "error", "result": None, "error": str(e)}
-            }))
+            await websocket.send(json.dumps(payload))
         except Exception:
             pass
-        # Persist failure to local history
+
         save_task_record(
             chunk_id=chunk_id,
             status="error",
+            result=None,
             error=str(e),
             start_time=start_time.isoformat(),
             end_time=end_time.isoformat(),
             execution_time=exec_seconds,
         )
+
+        if gui_signals:
+            gui_signals.task_completed.emit({
+                "chunk_id": chunk_id,
+                "status": "error",
+                "execution_time_seconds": exec_seconds
+            })
+            gui_signals.status_changed.emit("connected")
     finally:
         decrement_running_tasks()
+
+
+async def run_worker():
+    """Main worker lifecycle: discover master, register, connect WebSocket."""
+    master_ip = os.getenv("MASTER_IP")
+    master_port = os.getenv("MASTER_PORT")
+
+    if not master_ip or not master_port:
         if gui_signals:
-            gui_signals.task_completed.emit({"chunk_id": chunk_id})
-            gui_signals.status_changed.emit("connected")
+            gui_signals.status_changed.emit("discovering")
+        logger.info("Discovering master node via UDP...")
+        try:
+            master_ip, master_port = await discover_master(timeout=10.0)
+            logger.info(f"Discovered master at {master_ip}:{master_port}")
+        except Exception as e:
+            logger.error(f"Discovery failed: {e}")
+            if gui_signals:
+                gui_signals.status_changed.emit("disconnected")
+            return
+    else:
+        master_port = int(master_port)
 
+    if gui_signals:
+        gui_signals.master_info.emit(master_ip, master_port)
+        gui_signals.status_changed.emit("registering")
 
-async def connect_websocket(master_ip: str, ws_port: int):
-    """Maintain persistent WebSocket connection with auto-reconnect."""
+    # Register via HTTP
+    registered = await register_with_master(master_ip, master_port)
+    if not registered:
+        if gui_signals:
+            gui_signals.status_changed.emit("disconnected")
+        return
+
+    # WebSocket with HMAC Token Auth (GAP 7)
     ws_scheme = "wss" if USE_TLS else "ws"
-    ws_url = f"{ws_scheme}://{master_ip}:{ws_port}/ws/worker/{WORKER_UID}"
+    token = generate_worker_token(WORKER_UID)
+    ws_url = f"{ws_scheme}://{master_ip}:{master_port}/ws/worker/{WORKER_UID}?token={token}"
 
-    ssl_context = None
-    if USE_TLS:
-        import ssl as ssl_module
-        ssl_context = ssl_module.create_default_context()
-        if not TLS_VERIFY:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl_module.CERT_NONE
+    logger.info(f"Connecting to Master WebSocket at {ws_url}...")
 
+    retry_delay = 3
     while True:
         try:
-            logger.info(f"Connecting to Master WebSocket at {ws_url}...")
             if gui_signals:
                 gui_signals.status_changed.emit("connecting")
 
-            async with websockets.connect(
-                ws_url, ping_interval=20, ping_timeout=10, ssl=ssl_context
-            ) as websocket:
-                logger.info("WebSocket connected successfully.")
+            async with websockets.connect(ws_url) as websocket:
+                logger.info("Connected to Master Node via WebSocket.")
                 if gui_signals:
                     gui_signals.status_changed.emit("connected")
 
-                # Run heartbeat and listener concurrently
-                await asyncio.gather(
-                    heartbeat_loop(websocket),
-                    task_listener_loop(websocket)
+                heartbeat_task = asyncio.create_task(heartbeat_loop(websocket))
+                listener_task = asyncio.create_task(task_listener_loop(websocket))
+
+                done, pending = await asyncio.wait(
+                    [heartbeat_task, listener_task],
+                    return_when=asyncio.FIRST_COMPLETED
                 )
+                for t in pending:
+                    t.cancel()
+
         except asyncio.CancelledError:
-            logger.info("WebSocket connection cancelled by host request.")
+            logger.info("Worker stopped by user.")
             if gui_signals:
                 gui_signals.status_changed.emit("disconnected")
             break
         except Exception as e:
-            logger.error(f"WebSocket connection failed: {e}. Retrying in 5 seconds...")
+            logger.error(f"WebSocket connection error: {e}. Retrying in {retry_delay}s...")
             if gui_signals:
                 gui_signals.status_changed.emit("disconnected")
-            await asyncio.sleep(5)
+            await asyncio.sleep(retry_delay)
 
 
-async def agent_main_loop(master_ip: str, master_port: int):
-    """Core loops runner for GUI threads."""
-    global connection_task
-    try:
-        if gui_signals:
-            gui_signals.status_changed.emit("registering")
-        success = await register_with_master(master_ip, master_port)
-        if not success:
-            logger.error("Registration failed.")
-            if gui_signals:
-                gui_signals.status_changed.emit("error")
-            return
+def start_worker_thread():
+    global background_loop, connection_task, async_thread
+    background_loop = asyncio.new_event_loop()
 
-        if gui_signals:
-            gui_signals.status_changed.emit("registered")
-
-        connection_task = asyncio.create_task(connect_websocket(master_ip, master_port))
-        await connection_task
-    except asyncio.CancelledError:
-        logger.info("Agent loop cancelled by user.")
-    except Exception as e:
-        logger.error(f"Error in background loops: {e}")
-        if gui_signals:
-            gui_signals.status_changed.emit("error")
-
-
-def start_agent_thread():
-    """Start the background loops runner in a thread."""
-    global async_thread
-    stop_agent_thread()
-
-    def run():
-        global background_loop
-        background_loop = asyncio.new_event_loop()
+    def run_loop():
         asyncio.set_event_loop(background_loop)
+        background_loop.run_until_complete(run_worker())
 
-        master_ip = os.getenv("MASTER_IP")
-        master_port = os.getenv("MASTER_PORT")
-
-        async def run_discovery():
-            nonlocal master_ip, master_port
-            if not master_ip or not master_port:
-                if gui_signals:
-                    gui_signals.status_changed.emit("discovering")
-                try:
-                    master_info = await discover_master(udp_port=9999)
-                    master_ip = master_info['master_ip']
-                    master_port = master_info['master_ws_port']
-                    if gui_signals:
-                        gui_signals.master_info.emit(master_ip, master_port)
-                except Exception as e:
-                    logger.error(f"Discovery error: {e}")
-                    if gui_signals:
-                        gui_signals.status_changed.emit("error")
-                    return
-            
-            if master_ip and master_port:
-                os.environ["MASTER_IP"] = master_ip
-                os.environ["MASTER_PORT"] = str(master_port)
-                await agent_main_loop(master_ip, int(master_port))
-
-        background_loop.run_until_complete(run_discovery())
-
-    async_thread = threading.Thread(target=run, daemon=True)
+    async_thread = threading.Thread(target=run_loop, daemon=True)
     async_thread.start()
 
 
-def stop_agent_thread():
-    """Cancel connection tasks and stop background threads."""
-    global async_thread, background_loop, connection_task
-    
-    if background_loop:
-        if connection_task and not connection_task.done():
-            background_loop.call_soon_threadsafe(connection_task.cancel)
+def stop_worker():
+    global background_loop
+    if background_loop and background_loop.is_running():
         background_loop.call_soon_threadsafe(background_loop.stop)
-        
-    if async_thread:
-        async_thread.join(timeout=2.0)
-        async_thread = None
-    background_loop = None
-    connection_task = None
-
-
-async def main_cli():
-    """CLI mode execution flow."""
-    logger.info("=" * 60)
-    logger.info(f"  CoCompute CLI Worker Starting... UID={WORKER_UID}")
-    logger.info("=" * 60)
-
-    env_master_ip = os.getenv("MASTER_IP")
-    env_master_port = os.getenv("MASTER_PORT")
-
-    if env_master_ip and env_master_port:
-        master_ip = env_master_ip
-        master_port = int(env_master_port)
-        logger.info(f"Using Master configured via environment: {master_ip}:{master_port}")
-    else:
-        logger.info("Master IP/Port not configured in environment. Starting discovery...")
-        master_info = await discover_master(udp_port=9999)
-        master_ip = master_info['master_ip']
-        master_port = master_info['master_ws_port']
-        logger.info(f"Discovered Master at {master_ip}:{master_port}")
-
-    success = await register_with_master(master_ip, master_port)
-    if not success:
-        logger.error("Registration failed. Exiting.")
-        return
-
-    await connect_websocket(master_ip, master_port)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CoCompute Worker Agent")
-    parser.add_argument("--headless", action="store_true", help="Run without PySide6 graphical dashboard")
-    args, unknown = parser.parse_known_args()
+    parser = argparse.ArgumentParser(description="CoCompute Worker Node")
+    parser.add_argument("--gui", action="store_true", help="Launch Worker with PySide6 GUI")
+    parser.add_argument("--master-ip", type=str, help="Master node IP address")
+    parser.add_argument("--master-port", type=int, help="Master node port")
+    args = parser.parse_args()
 
-    # Determine if GUI is available and requested
-    run_gui = not args.headless
-    if run_gui:
-        try:
-            from PySide6.QtCore import QObject
-            from .ui.gui import run_qt_app, WorkerSignals
-            global gui_signals
-            gui_signals = WorkerSignals()
-        except ImportError:
-            logger.warning("PySide6 is not installed or GUI not supported. Falling back to CLI mode.")
-            run_gui = False
+    if args.master_ip:
+        os.environ["MASTER_IP"] = args.master_ip
+    if args.master_port:
+        os.environ["MASTER_PORT"] = str(args.master_port)
 
-    if run_gui:
-        logger.info("Starting PySide6 Worker Dashboard UI...")
-        # Start backend threads
-        start_agent_thread()
-        # Start Qt Application loop in the main thread (blocking)
-        run_qt_app(gui_signals, stop_agent_thread, start_agent_thread)
+    if args.gui:
+        global gui_signals
+        from .ui.gui import WorkerSignals, run_qt_app
+        gui_signals = WorkerSignals()
+        start_worker_thread()
+        run_qt_app(gui_signals, stop_cb=stop_worker, start_cb=start_worker_thread)
     else:
-        # Run standard CLI asyncio loop
-        asyncio.run(main_cli())
+        asyncio.run(run_worker())
 
 
 if __name__ == "__main__":

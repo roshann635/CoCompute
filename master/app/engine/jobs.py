@@ -1,23 +1,20 @@
 """
-Job Generator — creates task chunks for different job types.
-
-Supported job types:
-  1. prime_generation — find primes in a numeric range
-  2. matrix_multiply — distributed matrix multiplication (row-based split)
-  3. word_count — MapReduce-style word count on text
-  4. generic_python — user-provided script with data chunks
+Job Generator — creates task chunks for all standard CoCompute job types.
 """
+
 import math
 import json
 import logging
+from typing import List, Dict, Any
+
+from shared.sdk.registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
 
-def generate_prime_job(start_range: int, end_range: int, chunks: int) -> list:
-    """Split a prime number search range into chunks."""
+def generate_prime_job(start_range: int = 1, end_range: int = 100000, chunks: int = 10) -> list:
     total_numbers = end_range - start_range
-    chunk_size = math.ceil(total_numbers / chunks)
+    chunk_size = math.ceil(total_numbers / chunks) if total_numbers else 1
     tasks = []
     current_start = start_range
 
@@ -51,29 +48,20 @@ print(json.dumps({"primes_found": len(primes), "primes": primes[:100]}))
             }
         })
         current_start = current_end
-
     return tasks
 
 
-def generate_matrix_multiply_job(rows_a: int, cols_a: int, cols_b: int, chunks: int) -> list:
-    """
-    Distributed matrix multiplication: C = A × B.
-    Generates random matrices and splits rows of A across chunks.
-    Each chunk computes a subset of rows of C.
-    """
+def generate_matrix_multiply_job(rows_a: int = 50, cols_a: int = 50, cols_b: int = 50, chunks: int = 5) -> list:
     import random
     random.seed(42)
-
-    # Generate matrices
     matrix_a = [[random.randint(1, 10) for _ in range(cols_a)] for _ in range(rows_a)]
     matrix_b = [[random.randint(1, 10) for _ in range(cols_b)] for _ in range(cols_a)]
 
-    chunk_size = math.ceil(rows_a / chunks)
+    chunk_size = math.ceil(rows_a / chunks) if rows_a else 1
     tasks = []
 
     script = """
 import sys, json
-
 data = json.loads(sys.argv[1])
 rows_a = data["rows_a"]
 matrix_b = data["matrix_b"]
@@ -94,13 +82,13 @@ print(json.dumps({"start_row": start_row, "result_rows": result_rows}))
         start_row = i * chunk_size
         end_row = min(start_row + chunk_size, rows_a)
         chunk_rows = matrix_a[start_row:end_row]
-
+        if not chunk_rows:
+            continue
         payload_data = json.dumps({
             "rows_a": chunk_rows,
             "matrix_b": matrix_b,
             "start_row": start_row
         })
-
         tasks.append({
             "chunk_index": i,
             "payload": {
@@ -109,15 +97,10 @@ print(json.dumps({"start_row": start_row, "result_rows": result_rows}))
                 "args": [payload_data]
             }
         })
-
     return tasks
 
 
-def generate_word_count_job(text: str, chunks: int) -> list:
-    """
-    MapReduce-style word count.
-    Splits text into chunks and each worker counts words in their chunk.
-    """
+def generate_word_count_job(text: str = "hello world", chunks: int = 5) -> list:
     words = text.split()
     chunk_size = math.ceil(len(words) / chunks) if words else 1
     tasks = []
@@ -125,7 +108,6 @@ def generate_word_count_job(text: str, chunks: int) -> list:
     script = """
 import sys, json
 from collections import Counter
-
 data = json.loads(sys.argv[1])
 words = data["words"]
 counts = dict(Counter(words))
@@ -136,12 +118,9 @@ print(json.dumps({"word_counts": counts, "total_words": len(words)}))
         start = i * chunk_size
         end = min(start + chunk_size, len(words))
         chunk_words = words[start:end]
-
         if not chunk_words:
             continue
-
         payload_data = json.dumps({"words": chunk_words})
-
         tasks.append({
             "chunk_index": i,
             "payload": {
@@ -150,15 +129,12 @@ print(json.dumps({"word_counts": counts, "total_words": len(words)}))
                 "args": [payload_data]
             }
         })
-
     return tasks
 
 
-def generate_generic_python_job(script: str, data_chunks: list) -> list:
-    """
-    Generic job: user provides a Python script and a list of data chunks.
-    Each chunk is passed as a JSON arg to the script.
-    """
+def generate_generic_python_job(script: str = "print('hello')", data_chunks: list = None) -> list:
+    if data_chunks is None:
+        data_chunks = [{}]
     tasks = []
     for i, chunk_data in enumerate(data_chunks):
         tasks.append({
@@ -166,32 +142,25 @@ def generate_generic_python_job(script: str, data_chunks: list) -> list:
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [json.dumps(chunk_data)] if isinstance(chunk_data, (dict, list)) else [str(chunk_data)]
+                "args": [json.dumps(chunk_data)]
             }
         })
     return tasks
 
 
-def generate_sorting_job(array_size: int, chunks: int) -> list:
-    """
-    Distributed sorting.
-    Generates a large list of random numbers, splits it into chunks,
-    and each worker sorts its chunk.
-    """
+def generate_sorting_job(array_size: int = 1000, chunks: int = 5) -> list:
     import random
     random.seed(42)
     data_array = [random.randint(1, 1000000) for _ in range(array_size)]
-    
     chunk_size = math.ceil(array_size / chunks) if array_size else 1
     tasks = []
-    
+
     script = """
 import sys, json
-
 data = json.loads(sys.argv[1])
 numbers = data["numbers"]
-sorted_numbers = sorted(numbers)
-print(json.dumps({"sorted_numbers": sorted_numbers}))
+numbers.sort()
+print(json.dumps({"sorted_numbers": numbers}))
 """.strip()
 
     for i in range(chunks):
@@ -200,7 +169,6 @@ print(json.dumps({"sorted_numbers": sorted_numbers}))
         chunk_data = data_array[start:end]
         if not chunk_data:
             continue
-            
         payload_data = json.dumps({"numbers": chunk_data})
         tasks.append({
             "chunk_index": i,
@@ -213,25 +181,19 @@ print(json.dumps({"sorted_numbers": sorted_numbers}))
     return tasks
 
 
-def generate_image_processing_job(images_count: int, filter_type: str, chunks: int) -> list:
-    """
-    Distributed Image Processing (Mock representation using pixel matrices).
-    Each image is represented as a 10x10 matrix of [R, G, B] values.
-    """
+def generate_image_processing_job(images_count: int = 5, filter_type: str = "grayscale", chunks: int = 2) -> list:
     import random
     random.seed(42)
-    
     images = []
     for img_idx in range(images_count):
         pixels = [[[random.randint(0, 255) for _ in range(3)] for _ in range(10)] for _ in range(10)]
         images.append({"id": img_idx, "pixels": pixels})
-        
+
     chunk_size = math.ceil(images_count / chunks) if images_count else 1
     tasks = []
-    
+
     script = """
 import sys, json
-
 data = json.loads(sys.argv[1])
 images = data["images"]
 filter_type = data["filter_type"]
@@ -249,12 +211,16 @@ for img in images:
                 new_row.append([gray, gray, gray])
             elif filter_type == "invert":
                 new_row.append([255 - r, 255 - g, 255 - b])
+            elif filter_type == "edge":
+                edge_val = int(abs(r - g) + abs(g - b)) % 256
+                new_row.append([edge_val, edge_val, edge_val])
             else:
-                new_row.append([r, g, b])
+                avg = int((r + g + b) / 3)
+                new_row.append([avg, avg, avg])
         new_pixels.append(new_row)
     processed.append({"id": img["id"], "pixels": new_pixels})
-    
-print(json.dumps({"processed_images": processed}))
+
+print(json.dumps({"processed_images": processed, "filter_applied": filter_type}))
 """.strip()
 
     for i in range(chunks):
@@ -263,11 +229,7 @@ print(json.dumps({"processed_images": processed}))
         chunk_images = images[start:end]
         if not chunk_images:
             continue
-            
-        payload_data = json.dumps({
-            "images": chunk_images,
-            "filter_type": filter_type
-        })
+        payload_data = json.dumps({"images": chunk_images, "filter_type": filter_type})
         tasks.append({
             "chunk_index": i,
             "payload": {
@@ -279,33 +241,29 @@ print(json.dumps({"processed_images": processed}))
     return tasks
 
 
-def generate_compression_job(file_size_kb: int, chunks: int) -> list:
-    """
-    Distributed Compression.
-    Splits text lines into chunks and compresses them using zlib.
-    """
-    text_block = "CoCompute distributed execution test data. " * (file_size_kb * 20)
-    lines = [text_block[i:i+100] for i in range(0, len(text_block), 100)]
-    
-    chunk_size = math.ceil(len(lines) / chunks) if lines else 1
+def generate_compression_job(file_size_kb: int = 100, chunks: int = 5) -> list:
+    raw_text = ("CoCompute distributed computing system payload data " * 50)[: file_size_kb * 1024]
+    chunk_size = math.ceil(len(raw_text) / chunks) if raw_text else 1
     tasks = []
-    
+
     script = """
 import sys, json, zlib, base64
-
 data = json.loads(sys.argv[1])
 text = data["text"]
-compressed = base64.b64encode(zlib.compress(text.encode())).decode()
-print(json.dumps({"compressed_data": compressed, "original_length": len(text)}))
+compressed = zlib.compress(text.encode("utf-8"))
+print(json.dumps({
+    "original_length": len(text),
+    "compressed_length": len(compressed),
+    "compressed_base64": base64.b64encode(compressed).decode("ascii")
+}))
 """.strip()
 
     for i in range(chunks):
         start = i * chunk_size
-        end = min(start + chunk_size, len(lines))
-        chunk_text = "\n".join(lines[start:end])
+        end = min(start + chunk_size, len(raw_text))
+        chunk_text = raw_text[start:end]
         if not chunk_text:
             continue
-            
         payload_data = json.dumps({"text": chunk_text})
         tasks.append({
             "chunk_index": i,
@@ -318,46 +276,126 @@ print(json.dumps({"compressed_data": compressed, "original_length": len(text)}))
     return tasks
 
 
-def generate_job_chunks(job_type: str, params: dict) -> list:
-    """Route to the correct job generator based on type."""
+def generate_statistics_job(array_size: int = 1000, chunks: int = 5) -> list:
+    import random
+    random.seed(42)
+    data_array = [round(random.gauss(50, 15), 2) for _ in range(array_size)]
+    chunk_size = math.ceil(array_size / chunks) if array_size else 1
+    tasks = []
+
+    script = """
+import sys, json
+data = json.loads(sys.argv[1])
+numbers = data["numbers"]
+numbers.sort()
+print(json.dumps({
+    "values": numbers,
+    "sum": sum(numbers),
+    "count": len(numbers),
+    "min": min(numbers) if numbers else None,
+    "max": max(numbers) if numbers else None,
+}))
+""".strip()
+
+    for i in range(chunks):
+        start = i * chunk_size
+        end = min(start + chunk_size, array_size)
+        chunk_data = data_array[start:end]
+        if not chunk_data:
+            continue
+        payload_data = json.dumps({"numbers": chunk_data})
+        tasks.append({
+            "chunk_index": i,
+            "payload": {
+                "type": "python",
+                "script": script,
+                "args": [payload_data]
+            }
+        })
+    return tasks
+
+
+def generate_search_job(array_size: int = 100000, target: int = 42, chunks: int = 10) -> list:
+    import random
+    random.seed(42)
+    data_array = [random.randint(1, 1000000) for _ in range(array_size)]
+    if target not in data_array and array_size > 0:
+        insert_pos = random.randint(0, array_size - 1)
+        data_array[insert_pos] = target
+
+    chunk_size = math.ceil(array_size / chunks) if array_size else 1
+    tasks = []
+
+    script = """
+import sys, json
+data = json.loads(sys.argv[1])
+numbers = data["numbers"]
+target = data["target"]
+offset = data["offset"]
+
+found = False
+global_index = None
+for i, num in enumerate(numbers):
+    if num == target:
+        found = True
+        global_index = offset + i
+        break
+
+print(json.dumps({
+    "target": target,
+    "found": found,
+    "global_index": global_index,
+    "chunk_size": len(numbers)
+}))
+""".strip()
+
+    for i in range(chunks):
+        start = i * chunk_size
+        end = min(start + chunk_size, array_size)
+        chunk_data = data_array[start:end]
+        if not chunk_data:
+            continue
+        payload_data = json.dumps({
+            "numbers": chunk_data,
+            "target": target,
+            "offset": start
+        })
+        tasks.append({
+            "chunk_index": i,
+            "payload": {
+                "type": "python",
+                "script": script,
+                "args": [payload_data]
+            }
+        })
+    return tasks
+
+
+def generate_job_chunks(job_type: str, params: dict) -> List[dict]:
+    """Route to generator based on job_type."""
     if job_type == "prime_generation":
-        return generate_prime_job(
-            params.get("start", 1),
-            params.get("end", 100000),
-            params.get("chunks", 10)
-        )
+        return generate_prime_job(params.get("start", 1), params.get("end", 100000), params.get("chunks", 10))
     elif job_type == "matrix_multiply":
-        return generate_matrix_multiply_job(
-            params.get("rows_a", 10),
-            params.get("cols_a", 10),
-            params.get("cols_b", 10),
-            params.get("chunks", 5)
-        )
+        return generate_matrix_multiply_job(params.get("rows_a", 10), params.get("cols_a", 10), params.get("cols_b", 10), params.get("chunks", 5))
     elif job_type == "word_count":
-        return generate_word_count_job(
-            params.get("text", "hello world"),
-            params.get("chunks", 5)
-        )
+        return generate_word_count_job(params.get("text", "hello world"), params.get("chunks", 5))
     elif job_type == "sorting":
-        return generate_sorting_job(
-            params.get("array_size", 1000),
-            params.get("chunks", 5)
-        )
+        return generate_sorting_job(params.get("array_size", 1000), params.get("chunks", 5))
     elif job_type == "image_processing":
-        return generate_image_processing_job(
-            params.get("images_count", 5),
-            params.get("filter_type", "grayscale"),
-            params.get("chunks", 2)
-        )
+        return generate_image_processing_job(params.get("images_count", 5), params.get("filter_type", "grayscale"), params.get("chunks", 2))
     elif job_type == "compression":
-        return generate_compression_job(
-            params.get("file_size_kb", 100),
-            params.get("chunks", 5)
-        )
+        return generate_compression_job(params.get("file_size_kb", 100), params.get("chunks", 5))
+    elif job_type == "statistics":
+        return generate_statistics_job(params.get("array_size", 1000), params.get("chunks", 5))
+    elif job_type == "search":
+        return generate_search_job(params.get("array_size", 100000), params.get("target", 42), params.get("chunks", 10))
     elif job_type == "generic_python":
-        return generate_generic_python_job(
-            params.get("script", "print('hello')"),
-            params.get("data_chunks", [{}])
-        )
-    else:
-        raise ValueError(f"Unsupported job type: {job_type}")
+        return generate_generic_python_job(params.get("script", "print('hello')"), params.get("data_chunks", [{}]))
+    
+    # Check TaskRegistry for SDK tasks (cipher, ml_training, distributed_inference, llm_finetune)
+    task = TaskRegistry.get(job_type)
+    if task:
+        chunks_count = int(params.get("chunks", 4))
+        return task.partition(params, chunks_count)
+
+    raise ValueError(f"Unsupported job type: {job_type}")

@@ -9,7 +9,19 @@ SQLALCHEMY_DATABASE_URL = os.getenv(
     "postgresql://cocompute:cocompute@localhost:5432/cocompute"
 )
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, pool_size=20, max_overflow=10)
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL,
+        connect_args={"check_same_thread": False}
+    )
+else:
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=20,
+        max_overflow=10
+    )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
@@ -20,3 +32,4 @@ def get_db():
         yield db
     finally:
         db.close()
+

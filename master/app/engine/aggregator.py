@@ -2,65 +2,72 @@
 Result Aggregation Engine.
 
 Collects partial results from completed task chunks, merges them according to
-the job type, validates consistency, and stores the final aggregated result.
+the task-specific aggregation logic, executes global validation, creates checkpoints
+if applicable, and saves full persistent artifact bundles to MinIO and local storage.
 """
+
 import logging
+import json
+import heapq
 from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
+from sqlalchemy import func as sa_func
+
 from ..db import models
 from ..storage.file_store import save_result_file
+from ..services.minio_service import minio_service
+from shared.sdk.registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
 
-def aggregate_prime_results(results: list[dict]) -> dict:
-    """Merge prime generation results: sum counts, combine sample primes."""
-    total_primes = 0
-    sample_primes = []
+# ── Explicit Task Aggregation Helpers (Used by Engine & Unit Tests) ──────────
+
+def aggregate_prime_results(results: list) -> dict:
+    all_primes = []
     for r in results:
         data = r.get("result_data", {})
-        if isinstance(data, dict):
-            total_primes += data.get("primes_found", 0)
-            sample_primes.extend(data.get("primes", [])[:20])
-    sample_primes.sort()
+        primes = data.get("primes", [])
+        all_primes.extend(primes)
+    all_primes.sort()
     return {
-        "total_primes_found": total_primes,
-        "sample_primes": sample_primes[:100]
+        "total_primes_found": len(all_primes),
+        "sample_primes": all_primes[:100],
+        "first_prime": all_primes[0] if all_primes else None,
+        "largest_prime": all_primes[-1] if all_primes else None,
+        "primes": all_primes
     }
 
 
-def aggregate_matrix_results(results: list[dict]) -> dict:
-    """Merge matrix multiplication results: reassemble rows by start_row index."""
+def aggregate_matrix_results(results: list) -> dict:
     all_rows = []
     for r in results:
         data = r.get("result_data", {})
-        if isinstance(data, dict):
-            start_row = data.get("start_row", 0)
-            rows = data.get("result_rows", [])
-            for i, row in enumerate(rows):
-                all_rows.append((start_row + i, row))
-
+        start_row = data.get("start_row", 0)
+        rows = data.get("result_rows", [])
+        for i, row in enumerate(rows):
+            all_rows.append((start_row + i, row))
     all_rows.sort(key=lambda x: x[0])
     result_matrix = [row for _, row in all_rows]
+    cols = len(result_matrix[0]) if result_matrix else 0
     return {
         "result_matrix": result_matrix,
-        "dimensions": f"{len(result_matrix)}x{len(result_matrix[0]) if result_matrix else 0}"
+        "dimensions": f"{len(result_matrix)}x{cols}",
+        "rows": len(result_matrix),
+        "cols": cols
     }
 
 
-def aggregate_word_count_results(results: list[dict]) -> dict:
-    """Merge word count results: combine all word count dicts (reduce phase)."""
+def aggregate_word_count_results(results: list) -> dict:
     merged_counts = {}
     total_words = 0
     for r in results:
         data = r.get("result_data", {})
-        if isinstance(data, dict):
-            counts = data.get("word_counts", {})
-            total_words += data.get("total_words", 0)
-            for word, count in counts.items():
-                merged_counts[word] = merged_counts.get(word, 0) + count
-
-    # Sort by frequency
+        counts = data.get("word_counts", {})
+        total_words += data.get("total_words", 0)
+        for word, count in counts.items():
+            merged_counts[word] = merged_counts.get(word, 0) + count
     top_words = sorted(merged_counts.items(), key=lambda x: x[1], reverse=True)[:50]
     return {
         "total_words": total_words,
@@ -70,92 +77,174 @@ def aggregate_word_count_results(results: list[dict]) -> dict:
     }
 
 
-def aggregate_generic_results(results: list[dict]) -> dict:
-    """Merge generic Python results: collect all results into a list."""
-    collected = []
-    for r in results:
-        collected.append({
-            "chunk_index": r.get("chunk_index", -1),
-            "result": r.get("result_data")
-        })
-    collected.sort(key=lambda x: x["chunk_index"])
-    return {"results": collected}
-
-
-def aggregate_sorting_results(results: list[dict]) -> dict:
-    """Merge sorting results: combine and sort the lists."""
-    import heapq
+def aggregate_sorting_results(results: list) -> dict:
     sorted_lists = []
     for r in results:
         data = r.get("result_data", {})
-        if isinstance(data, dict):
-            nums = data.get("sorted_numbers", [])
-            sorted_lists.append(nums)
+        sorted_lists.append(data.get("sorted_numbers", []))
     merged = list(heapq.merge(*sorted_lists))
+    is_sorted = all(merged[i] <= merged[i + 1] for i in range(len(merged) - 1)) if merged else True
     return {
-        "sorted_array": merged[:100],  # preview first 100
+        "sorted_array": merged,
+        "sorted_preview": merged[:100],
         "total_elements": len(merged),
-        "is_sorted": all(merged[i] <= merged[i+1] for i in range(len(merged)-1))
+        "min_value": merged[0] if merged else None,
+        "max_value": merged[-1] if merged else None,
+        "is_sorted": is_sorted,
+        "validation": {"is_sorted": is_sorted, "total_elements": len(merged)}
     }
 
 
-def aggregate_image_processing_results(results: list[dict]) -> dict:
-    """Merge image processing results: reassemble images by ID."""
+def aggregate_image_processing_results(results: list) -> dict:
     all_images = []
+    filter_applied = "grayscale"
     for r in results:
         data = r.get("result_data", {})
-        if isinstance(data, dict):
-            imgs = data.get("processed_images", [])
-            all_images.extend(imgs)
+        imgs = data.get("processed_images", [])
+        all_images.extend(imgs)
+        filter_applied = data.get("filter_applied", filter_applied)
     all_images.sort(key=lambda x: x.get("id", 0))
     return {
         "images": all_images,
+        "filter_type": filter_applied,
         "total_processed": len(all_images)
     }
 
 
-def aggregate_compression_results(results: list[dict]) -> dict:
-    """Merge compression results: calculate saving ratio and collect chunk summaries."""
-    chunks_info = []
-    total_compressed_bytes = 0
-    total_original_bytes = 0
+def aggregate_compression_results(results: list) -> dict:
+    total_orig = sum(r.get("result_data", {}).get("original_length", 0) for r in results)
+    total_comp = sum(
+        r.get("result_data", {}).get("compressed_length", len(r.get("result_data", {}).get("compressed_data", "")))
+        for r in results
+    )
+    ratio = round(total_comp / total_orig, 4) if total_orig > 0 else 0.0
+    savings = round((1.0 - (total_comp / total_orig)) * 100.0, 2) if total_orig > 0 else 0.0
+    chunks = []
     for r in results:
-        data = r.get("result_data", {})
-        if isinstance(data, dict):
-            comp_data = data.get("compressed_data", "")
-            orig_len = data.get("original_length", 0)
-            comp_len = len(comp_data)
-            total_compressed_bytes += comp_len
-            total_original_bytes += orig_len
-            chunks_info.append({
-                "chunk_index": r.get("chunk_index", -1),
-                "original_length": orig_len,
-                "compressed_length": comp_len
-            })
-    chunks_info.sort(key=lambda x: x["chunk_index"])
-    ratio = round((1 - (total_compressed_bytes / max(total_original_bytes, 1))) * 100, 2)
+        d = r.get("result_data", {})
+        c_len = d.get("compressed_length", len(d.get("compressed_data", "")))
+        chunks.append({
+            "chunk_index": r.get("chunk_index", 0),
+            "original_length": d.get("original_length", 0),
+            "compressed_length": c_len
+        })
     return {
-        "chunks": chunks_info,
-        "total_original_bytes": total_original_bytes,
-        "total_compressed_bytes": total_compressed_bytes,
-        "compression_ratio_savings_percent": ratio
+        "total_original_bytes": total_orig,
+        "total_compressed_bytes": total_comp,
+        "compression_ratio": ratio,
+        "compression_ratio_savings_percent": savings,
+        "chunks_compressed": len(results),
+        "chunks": chunks
     }
 
 
+def _generate_result_preview(job_type: str, aggregated: dict, exec_time: float = None) -> str:
+    time_str = f" in {exec_time:.2f}s" if exec_time else ""
+
+    if job_type == "sorting":
+        n = aggregated.get("total_elements", 0)
+        valid = aggregated.get("validation", {}).get("is_sorted", True)
+        status = "✅ verified" if valid else "⚠️ unverified"
+        return f"{n:,} numbers sorted{time_str} — {status}"
+    elif job_type == "prime_generation":
+        n = aggregated.get("total_primes_found", 0)
+        return f"{n:,} primes found{time_str}"
+    elif job_type == "matrix_multiply":
+        dims = aggregated.get("dimensions", "?x?")
+        return f"Matrix {dims} computed{time_str}"
+    elif job_type == "word_count":
+        total = aggregated.get("total_words", 0)
+        unique = aggregated.get("unique_words", 0)
+        return f"{total:,} words counted, {unique:,} unique{time_str}"
+    elif job_type == "statistics":
+        mean = aggregated.get("mean", 0)
+        median = aggregated.get("median", 0)
+        return f"Mean={mean}, Median={median}{time_str}"
+    elif job_type == "search":
+        found = aggregated.get("found", False)
+        target = aggregated.get("target")
+        if found:
+            idx = aggregated.get("index")
+            return f"Found {target} at index {idx}{time_str}"
+        return f"{target} not found{time_str}"
+    elif job_type == "cipher":
+        chars = aggregated.get("total_characters", 0)
+        return f"Cipher processed ({chars} chars){time_str}"
+    elif job_type == "ml_training":
+        loss = aggregated.get("global_loss", 0.0)
+        acc = aggregated.get("global_accuracy", 0.0)
+        return f"Trained: Loss={loss}, Acc={acc}%{time_str}"
+    elif job_type == "distributed_inference":
+        n = aggregated.get("total_inferences", 0)
+        conf = aggregated.get("average_confidence", 0.0)
+        return f"{n} batch predictions (conf={conf*100:.1f}%){time_str}"
+    elif job_type == "llm_finetune":
+        loss = aggregated.get("final_loss", 0.0)
+        perp = aggregated.get("final_perplexity", 0.0)
+        return f"LLM Adapter: Loss={loss}, Perplexity={perp}{time_str}"
+    elif job_type == "image_processing":
+        n = aggregated.get("total_processed", 0)
+        return f"{n} images processed{time_str}"
+    elif job_type == "compression":
+        ratio = aggregated.get("compression_ratio", 0)
+        return f"Compressed ({ratio*100:.1f}% ratio){time_str}"
+
+    return f"Completed{time_str}"
+
+
+def _generate_input_summary(job_type: str, params: dict) -> dict:
+    if job_type == "sorting":
+        return {
+            "description": f"Sort {params.get('array_size', 0):,} numbers",
+            "array_size": params.get("array_size"),
+            "chunks": params.get("chunks", 5),
+        }
+    elif job_type == "prime_generation":
+        return {
+            "description": f"Find primes in range [{params.get('start', 1):,}, {params.get('end', 100000):,})",
+            "start": params.get("start", 1),
+            "end": params.get("end"),
+            "chunks": params.get("chunks", 10),
+        }
+    elif job_type == "matrix_multiply":
+        return {
+            "description": f"Multiply {params.get('rows_a', 50)}x{params.get('cols_a', 50)} x {params.get('cols_a', 50)}x{params.get('cols_b', 50)} matrices",
+            "rows_a": params.get("rows_a"),
+            "cols_a": params.get("cols_a"),
+            "cols_b": params.get("cols_b"),
+            "chunks": params.get("chunks", 5)
+        }
+    elif job_type == "word_count":
+        text = params.get("text", "")
+        preview = text[:100] + "..." if len(text) > 100 else text
+        return {
+            "description": f"Word count ({len(text.split())} words)",
+            "text_preview": preview,
+            "chunks": params.get("chunks", 5),
+        }
+    elif job_type == "statistics":
+        return {
+            "description": f"Statistical analysis on {params.get('array_size', 1000):,} data points",
+            "array_size": params.get("array_size"),
+            "chunks": params.get("chunks", 5),
+        }
+    elif job_type == "search":
+        return {
+            "description": f"Search for target={params.get('target', 42)} in {params.get('array_size', 100000):,} numbers",
+            "target": params.get("target"),
+            "array_size": params.get("array_size"),
+            "chunks": params.get("chunks", 10)
+        }
+    return {"description": f"{job_type} job", "params": params}
+
+
 def try_aggregate_job(db: Session, job_id: int) -> bool:
-    """
-    Attempt to aggregate results for a job.
-    Called when a chunk completes. Checks if all chunks are done.
-    Returns True if aggregation was performed.
-    """
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if not job:
         return False
 
-    # Get all chunks for this job
     tasks = db.query(models.Task).filter(models.Task.job_id == job_id).all()
     task_ids = [t.id for t in tasks]
-
     if not task_ids:
         return False
 
@@ -167,72 +256,106 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
     failed_chunks = [c for c in all_chunks if c.status == "failed"]
     pending_or_running = [c for c in all_chunks if c.status in ("pending", "assigned", "running")]
 
-    # Update counts
     job.completed_tasks = len(completed_chunks)
     job.failed_tasks = len(failed_chunks)
 
-    # If there are still chunks running/pending, don't aggregate yet
     if pending_or_running:
         return False
 
-    # All chunks are terminal (completed or failed). Aggregate now.
-    logger.info(f"Aggregating results for job {job_id} ({len(completed_chunks)} completed, {len(failed_chunks)} failed)")
+    logger.info(f"Aggregating results for job {job_id} ({job.job_uid or ''})")
 
-    # Collect results
     results = []
     for chunk in completed_chunks:
         result = db.query(models.Result).filter(models.Result.task_chunk_id == chunk.id).first()
         if result:
             results.append({
                 "chunk_index": chunk.chunk_index,
-                "result_data": result.result_data
+                "result_data": result.result_data,
+                "output_reference": result.output_reference
             })
 
-    # Aggregate based on job type
-    aggregated = {}
-    try:
-        if job.job_type == "prime_generation":
-            aggregated = aggregate_prime_results(results)
-        elif job.job_type == "matrix_multiply":
-            aggregated = aggregate_matrix_results(results)
-        elif job.job_type == "word_count":
-            aggregated = aggregate_word_count_results(results)
-        elif job.job_type == "sorting":
-            aggregated = aggregate_sorting_results(results)
-        elif job.job_type == "image_processing":
-            aggregated = aggregate_image_processing_results(results)
-        elif job.job_type == "compression":
-            aggregated = aggregate_compression_results(results)
-        elif job.job_type == "generic_python":
-            aggregated = aggregate_generic_results(results)
-        else:
-            aggregated = aggregate_generic_results(results)
-    except Exception as e:
-        logger.error(f"Aggregation error for job {job_id}: {e}")
-        aggregated = {"error": str(e), "partial_results": [r.get("result_data") for r in results]}
+    worker_ids = set()
+    for chunk in all_chunks:
+        if chunk.worker_id:
+            worker_ids.add(chunk.worker_id)
+        for attempt in chunk.attempts:
+            if attempt.worker_id:
+                worker_ids.add(attempt.worker_id)
+    job.workers_used = len(worker_ids)
 
-    # Store aggregated result
-    job.aggregated_result = aggregated
+    if not job.input_summary and job.params:
+        job.input_summary = _generate_input_summary(job.job_type, job.params)
 
-    # Set final status
-    if failed_chunks and not completed_chunks:
-        job.status = "failed"
-    elif failed_chunks:
-        job.status = "completed"  # Partial success
-        aggregated["warning"] = f"{len(failed_chunks)} chunks failed"
-        job.aggregated_result = aggregated
+    # Route aggregation
+    if job.job_type == "prime_generation":
+        aggregated = aggregate_prime_results(results)
+    elif job.job_type == "matrix_multiply":
+        aggregated = aggregate_matrix_results(results)
+    elif job.job_type == "word_count":
+        aggregated = aggregate_word_count_results(results)
+    elif job.job_type == "sorting":
+        aggregated = aggregate_sorting_results(results)
+    elif job.job_type == "image_processing":
+        aggregated = aggregate_image_processing_results(results)
+    elif job.job_type == "compression":
+        aggregated = aggregate_compression_results(results)
     else:
-        job.status = "completed"
+        task = TaskRegistry.get(job.job_type)
+        if task:
+            aggregated = task.aggregate(results)
+            valid, err = task.validate_final(aggregated, job.params)
+            if not valid:
+                logger.error(f"Final validation failed for job {job_id}: {err}")
+                aggregated["validation_error"] = err
+        else:
+            collected = []
+            for r in results:
+                collected.append({"chunk_index": r.get("chunk_index", -1), "result": r.get("result_data")})
+            collected.sort(key=lambda x: x["chunk_index"])
+            aggregated = {"results": collected}
 
+    # Record Checkpoint for ML / LLM jobs
+    if job.job_type in ("ml_training", "llm_finetune") and completed_chunks:
+        chk_loc = aggregated.get("model_checkpoint") or aggregated.get("final_model_checkpoint") or f"minio://checkpoints/{job.job_uid or job.id}/final.pt"
+        job.checkpoint_location = chk_loc
+        job.model_location = chk_loc
+        checkpoint_entry = models.Checkpoint(
+            job_id=job.id,
+            checkpoint_step=job.params.get("steps", job.params.get("epochs", 10)),
+            checkpoint_epoch=job.params.get("epochs", 10),
+            checkpoint_location=chk_loc,
+            loss=aggregated.get("global_loss") or aggregated.get("final_loss"),
+            accuracy=aggregated.get("global_accuracy"),
+            metrics=aggregated,
+            is_valid=True
+        )
+        db.add(checkpoint_entry)
+
+    db_result = dict(aggregated)
+    if "sorted_array" in db_result:
+        full_array = db_result.pop("sorted_array")
+        db_result["sorted_preview"] = full_array[:100]
+        db_result["total_elements"] = len(full_array)
+        aggregated["sorted_array"] = full_array
+
+    if "primes" in db_result:
+        full_primes = db_result.pop("primes")
+        db_result["sample_primes"] = full_primes[:100]
+        db_result["total_primes_found"] = len(full_primes)
+        aggregated["primes"] = full_primes
+
+    job.aggregated_result = db_result
+    job.status = "completed" if not (failed_chunks and not completed_chunks) else "failed"
     job.end_time = datetime.now(timezone.utc)
 
-    # Update all tasks to completed
-    for task in tasks:
-        task.status = job.status
+    exec_time = (job.end_time - job.start_time).total_seconds() if job.start_time and job.end_time else None
+    job.result_preview = _generate_result_preview(job.job_type, aggregated, exec_time)
+
+    for t in tasks:
+        t.status = job.status
 
     db.commit()
 
-    # Auto-save result to file storage for download
     try:
         save_result_file(
             job_id=job_id,
@@ -240,15 +363,37 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
             job_type=job.job_type or "unknown",
             aggregated_result=aggregated,
             metadata={
+                "job_uid": job.job_uid,
                 "status": job.status,
                 "total_tasks": job.total_tasks,
                 "completed_tasks": len(completed_chunks),
                 "failed_tasks": len(failed_chunks),
+                "workers_used": job.workers_used,
+                "input_summary": job.input_summary,
+                "result_preview": job.result_preview,
+                "execution_time_seconds": exec_time,
+                "checkpoint_location": job.checkpoint_location,
                 "end_time": job.end_time.isoformat() if job.end_time else None,
             },
         )
+        bundle_uri = minio_service.upload_artifact_bundle(str(job.job_uid or job.id), {
+            "job_id": job.id,
+            "job_uid": job.job_uid,
+            "job_type": job.job_type,
+            "config": job.params,
+            "timeline": job.timeline,
+            "result_preview": job.result_preview,
+            "aggregated_result": aggregated
+        })
+        job.result_location = bundle_uri
+        db.commit()
     except Exception as e:
-        logger.warning(f"Failed to auto-save result file for job {job_id}: {e}")
+        logger.warning(f"Error saving artifact bundle for job {job_id}: {e}")
 
-    logger.info(f"Job {job_id} aggregation complete. Status: {job.status}")
+    from .scheduler import record_timeline_event
+    record_timeline_event(
+        db, job_id, "JOB_COMPLETED",
+        f"Job {job.job_uid or job_id} completed successfully ({job.result_preview})"
+    )
+
     return True

@@ -14,9 +14,14 @@ class WorkerCreate(BaseModel):
     cpu_model: Optional[str] = None
     cpu_frequency: Optional[float] = None
     mac_address: Optional[str] = None
-    agent_version: Optional[str] = "1.0.0"
+    agent_version: Optional[str] = "2.0.0"
     python_version: Optional[str] = None
     api_key: str = "cocompute-worker-key"
+    # GPU Specifications
+    gpu_count: Optional[int] = 0
+    gpu_model: Optional[str] = "None"
+    vram_total: Optional[float] = 0.0
+    cuda_available: Optional[bool] = False
 
 
 class WorkerResponse(BaseModel):
@@ -43,6 +48,14 @@ class WorkerResponse(BaseModel):
     running_tasks: int
     created_at: datetime
     last_seen: Optional[datetime]
+    # GPU Telemetry
+    gpu_count: Optional[int] = 0
+    gpu_model: Optional[str] = "None"
+    vram_total: Optional[float] = 0.0
+    vram_usage: Optional[float] = 0.0
+    gpu_utilization: Optional[float] = 0.0
+    gpu_temperature: Optional[float] = None
+    cuda_available: Optional[bool] = False
 
     class Config:
         from_attributes = True

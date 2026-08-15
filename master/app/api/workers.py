@@ -33,6 +33,11 @@ def register_worker(worker: schemas.WorkerCreate, db: Session = Depends(database
         db_worker.mac_address = worker.mac_address
         db_worker.agent_version = worker.agent_version
         db_worker.python_version = worker.python_version
+        # GPU Specs
+        db_worker.gpu_count = worker.gpu_count or 0
+        db_worker.gpu_model = worker.gpu_model
+        db_worker.vram_total = worker.vram_total or 0.0
+        db_worker.cuda_available = worker.cuda_available or False
         db_worker.last_seen = datetime.now(timezone.utc)
     else:
         # Create new worker
@@ -49,6 +54,10 @@ def register_worker(worker: schemas.WorkerCreate, db: Session = Depends(database
             mac_address=worker.mac_address,
             agent_version=worker.agent_version,
             python_version=worker.python_version,
+            gpu_count=worker.gpu_count or 0,
+            gpu_model=worker.gpu_model,
+            vram_total=worker.vram_total or 0.0,
+            cuda_available=worker.cuda_available or False,
             status="online"
         )
         db.add(db_worker)

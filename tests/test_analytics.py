@@ -248,7 +248,7 @@ def test_get_scheduler_comparison(db_session, seed_data):
         worker_id=worker.id,
         algorithm="resource_aware",
         score=78.5,
-        reasoning="Highest weighted score"
+        decision_reason="Highest weighted score"
     )
     db_session.add(decision)
     db_session.commit()
