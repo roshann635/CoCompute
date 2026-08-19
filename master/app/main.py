@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from .db.database import engine, Base, get_db
 from .db import models
-from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks, marketplace, simulation
+from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks, marketplace, simulation, task_packages, result_explorer, pipelines
 from .network.ws_manager import manager
 from .network.discovery import start_discovery_server
 from .engine.scheduler import (
@@ -71,6 +71,9 @@ app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"]
 app.include_router(marketplace.router)
 app.include_router(marketplace.credits_router)
 app.include_router(simulation.router)
+app.include_router(task_packages.router)
+app.include_router(result_explorer.router)
+app.include_router(pipelines.router)
 app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["metrics"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(benchmarks.router, prefix="/api/v1/benchmarks", tags=["benchmarks"])

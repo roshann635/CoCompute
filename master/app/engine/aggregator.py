@@ -381,6 +381,32 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
         except Exception as e:
             logger.debug(f"Closed-loop feedback error: {e}")
 
+    # 4. CoCompute 4.0 Result Intelligence & Quality Analysis
+    try:
+        from master.app.engine.result_intelligence import (
+            validate_result_integrity, detect_semantic_type_and_quality,
+            generate_presentation_descriptors, generate_performance_comparison
+        )
+        val_res = validate_result_integrity(aggregated)
+        sem_res = detect_semantic_type_and_quality(aggregated)
+        job.result_semantic_type = sem_res.get("semantic_type", "table")
+        job.result_quality = {
+            "integrity": val_res,
+            "quality_score": sem_res.get("quality_score", 100.0),
+            "total_records": sem_res.get("total_records", 1),
+            "missing_records": sem_res.get("missing_records", 0),
+            "duplicate_records": sem_res.get("duplicate_records", 0),
+            "descriptors": generate_presentation_descriptors(job.result_semantic_type, aggregated),
+            "performance_comparison": generate_performance_comparison(
+                exec_time or 1.0,
+                job.workers_used or 1,
+                getattr(job, "estimated_energy_kwh", 0.01) or 0.01,
+                getattr(job, "carbon_gco2_eq", 5.0) or 5.0
+            )
+        }
+    except Exception as e:
+        logger.debug(f"Result intelligence processing error: {e}")
+
     for t in tasks:
         t.status = job.status
 

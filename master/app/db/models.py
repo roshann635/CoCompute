@@ -175,6 +175,19 @@ class Job(Base):
     predicted_duration_sec = Column(Float, nullable=True)
     actual_duration_sec = Column(Float, nullable=True)
 
+    # CoCompute 4.0 Universal Autonomous Platform Attributes
+    task_package_id = Column(Integer, ForeignKey("task_packages.id", ondelete="SET NULL"), nullable=True)
+    pipeline_id = Column(Integer, ForeignKey("task_pipelines.id", ondelete="SET NULL"), nullable=True)
+    pipeline_stage_id = Column(Integer, nullable=True)
+    pilot_profile = Column(JSON, nullable=True)
+    parallelism_analysis = Column(JSON, nullable=True)
+    execution_plan = Column(JSON, nullable=True)          # Formal ExecutionPlan object (v1, v2, v3...)
+    decision_explanation = Column(JSON, nullable=True)    # Human-readable rationale
+    result_semantic_type = Column(String(50), nullable=True) # table, matrix, image, statistics, ml_metrics
+    result_quality = Column(JSON, nullable=True)          # Quality score %, missing records, validation checks
+    reproducibility_envelope = Column(JSON, nullable=True) # Full exact/equivalent metadata
+    is_reproducible = Column(Boolean, default=True)
+
     # Hardware & Runtime requirements
     requires_gpu = Column(Boolean, default=False)
     min_vram_gb = Column(Float, default=0.0)
@@ -199,6 +212,8 @@ class Job(Base):
     tasks = relationship("Task", back_populates="job", cascade="all, delete-orphan")
     checkpoints = relationship("Checkpoint", back_populates="job", cascade="all, delete-orphan")
     credit_transactions = relationship("CreditTransaction", back_populates="job")
+    task_package = relationship("TaskPackage", back_populates="jobs")
+    pipeline = relationship("TaskPipeline", back_populates="jobs")
 
 
 class Task(Base):
@@ -422,3 +437,67 @@ class BenchmarkRun(Base):
     parameters = Column(JSON, nullable=True)
     results = Column(JSON, nullable=False)  # list of {workers, execution_time, speedup, efficiency, status}
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TaskPackage(Base):
+    """
+    CoCompute 4.0 Universal Task Package Registry & Manifest.
+    """
+    __tablename__ = "task_packages"
+    id = Column(Integer, primary_key=True, index=True)
+    package_uid = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False, index=True)
+    version = Column(String(20), default="1.0", nullable=False)
+    description = Column(Text, nullable=True)
+    author = Column(String(100), default="anonymous")
+    runtime = Column(String(50), default="python:3.11")
+    is_public = Column(Boolean, default=True)
+    code_hash = Column(String(64), nullable=True)
+
+    # 5-Hook Task Definition Source Code & Manifest Contract
+    manifest = Column(JSON, nullable=False)        # Input, Execution, Parallelization, Aggregation contracts
+    script_code = Column(Text, nullable=False)     # Python source code implementing BaseTaskDefinition
+    entrypoint = Column(String(100), default="Task")
+    
+    # Pre-Flight Security & Compatibility Verification
+    is_verified = Column(Boolean, default=False)
+    compatibility_report = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    jobs = relationship("Job", back_populates="task_package")
+
+
+class TaskPipeline(Base):
+    """
+    CoCompute 4.0 Multi-Stage Workflow & Conditional DAG Pipeline.
+    """
+    __tablename__ = "task_pipelines"
+    id = Column(Integer, primary_key=True, index=True)
+    pipeline_uid = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String(30), default="idle") # idle, running, completed, failed
+    dag_structure = Column(JSON, nullable=False) # Nodes, edges, conditions (PASS, FAIL, score > X)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    stages = relationship("PipelineStage", back_populates="pipeline", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="pipeline")
+
+
+class PipelineStage(Base):
+    __tablename__ = "pipeline_stages"
+    id = Column(Integer, primary_key=True, index=True)
+    pipeline_id = Column(Integer, ForeignKey("task_pipelines.id", ondelete="CASCADE"), nullable=False)
+    stage_name = Column(String(100), nullable=False)
+    stage_order = Column(Integer, default=0)
+    task_type = Column(String(50), nullable=False)
+    task_package_id = Column(Integer, ForeignKey("task_packages.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(30), default="pending") # pending, running, completed, skipped, failed
+    condition = Column(String(100), nullable=True) # e.g. "on_pass", "on_fail", "score > 90"
+    stage_output = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    pipeline = relationship("TaskPipeline", back_populates="stages")
+
