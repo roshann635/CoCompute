@@ -1,4 +1,3 @@
-
 services:
   # ─── PostgreSQL Database ───
   postgres:
@@ -18,7 +17,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── Redis (Caching / Future Use) ───
+  # ─── Redis (Metrics & Queue Engine) ───
   redis:
     image: redis:7-alpine
     container_name: cocompute-redis
@@ -30,9 +29,30 @@ services:
       timeout: 3s
       retries: 5
 
+  # ─── MinIO (S3 Object Storage & Artifacts) ───
+  minio:
+    image: minio/minio:latest
+    container_name: cocompute-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # ─── Master Node ───
   master:
-    build: ./master
+    build:
+      context: .
+      dockerfile: master/Dockerfile
     container_name: cocompute-master
     ports:
       - "8000:8000"
@@ -41,15 +61,18 @@ services:
       DATABASE_URL: postgresql://cocompute:cocompute@postgres:5432/cocompute
       JWT_SECRET_KEY: cocompute-production-secret-change-me
       WORKER_API_KEY: cocompute-worker-key
+      COCOMPUTE_WORKER_SECRET: cocompute-default-cluster-secret-2026
       SCHEDULER_ALGORITHM: resource_aware
       AI_MODEL_PATH: /app/model.pkl
-      MASTER_DISCOVERY_IP: master
-      # FR-14: Load rebalancing thresholds
+      MASTER_DISCOVERY_IP: 0.0.0.0
       HIGH_UTILIZATION_THRESHOLD: "95.0"
       HIGH_RAM_THRESHOLD: "99.0"
       HEARTBEAT_TIMEOUT_SECONDS: "15"
       MAX_RETRIES: "3"
       REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
       STORAGE_ROOT: /app/storage
     depends_on:
       postgres:
@@ -58,18 +81,44 @@ services:
         condition: service_healthy
     volumes:
       - storage_data:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
-  # ─── Dashboard (React + Nginx) ───
+  # ─── Worker Node (Cluster Worker Daemon) ───
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      MASTER_IP: master
+      MASTER_PORT: "8000"
+      WORKER_API_KEY: cocompute-worker-key
+      COCOMPUTE_WORKER_SECRET: cocompute-default-cluster-secret-2026
+      HEARTBEAT_INTERVAL: "5"
+    depends_on:
+      master:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Dashboard (React + Nginx Control Center) ───
   dashboard:
-    build: ./dashboard
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
     container_name: cocompute-dashboard
     ports:
       - "3000:80"
     depends_on:
-      - master
+      master:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pgdata:
   storage_data:
+  minio_data:

@@ -17,6 +17,9 @@ from sqlalchemy import func as sa_func
 from ..db import models
 from ..storage.file_store import save_result_file
 from ..services.minio_service import minio_service
+from .energy_engine import estimate_job_energy
+from .reliability_engine import compute_worker_reliability
+from .ai_scheduler import record_closed_loop_feedback
 from shared.sdk.registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
@@ -349,7 +352,34 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
     job.end_time = datetime.now(timezone.utc)
 
     exec_time = (job.end_time - job.start_time).total_seconds() if job.start_time and job.end_time else None
+    job.actual_duration_sec = exec_time
     job.result_preview = _generate_result_preview(job.job_type, aggregated, exec_time)
+
+    # 1. CoCompute 3.0 Energy & Carbon Footprint Modeling
+    if exec_time:
+        energy_metrics = estimate_job_energy(job, exec_time, job.workers_used, getattr(job, "requires_gpu", False))
+        aggregated["energy_metrics"] = energy_metrics
+
+    # 2. Update 5-Factor Reliability Scores for Participating Workers
+    for wid in worker_ids:
+        w_obj = db.query(models.Worker).filter(models.Worker.id == wid).first()
+        if w_obj:
+            compute_worker_reliability(w_obj, db)
+
+    # 3. Closed-Loop Feedback Engine Recording
+    if exec_time and job.predicted_duration_sec:
+        try:
+            record_closed_loop_feedback(
+                db=db,
+                job_id=job.id,
+                job_type=job.job_type or "unknown",
+                strategy_used=job.scheduler_strategy or "adaptive_hybrid",
+                predicted_duration_sec=float(job.predicted_duration_sec),
+                actual_duration_sec=float(exec_time),
+                workers_count=job.workers_used or 1
+            )
+        except Exception as e:
+            logger.debug(f"Closed-loop feedback error: {e}")
 
     for t in tasks:
         t.status = job.status
@@ -370,6 +400,10 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
                 "failed_tasks": len(failed_chunks),
                 "workers_used": job.workers_used,
                 "input_summary": job.input_summary,
+                "workload_profile": job.workload_profile,
+                "energy_mode": job.energy_mode,
+                "estimated_energy_kwh": job.estimated_energy_kwh,
+                "carbon_gco2_eq": job.carbon_gco2_eq,
                 "result_preview": job.result_preview,
                 "execution_time_seconds": exec_time,
                 "checkpoint_location": job.checkpoint_location,
@@ -381,6 +415,7 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
             "job_uid": job.job_uid,
             "job_type": job.job_type,
             "config": job.params,
+            "workload_profile": job.workload_profile,
             "timeline": job.timeline,
             "result_preview": job.result_preview,
             "aggregated_result": aggregated

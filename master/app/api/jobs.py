@@ -6,6 +6,7 @@ from ..db import database, models
 from ..schemas import job as schemas
 from ..engine.jobs import generate_job_chunks
 from ..engine.aggregator import _generate_input_summary
+from ..engine.workload_profiler import profile_workload
 from ..core.security import get_current_user
 from ..services.queue_service import queue_service
 
@@ -55,19 +56,42 @@ def submit_job(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to generate job chunks: {str(e)}")
 
-    # 5. Generate input summary for dashboard display
+    # 5. Compute Workload Intelligence Profile
+    workload_prof = profile_workload(
+        job_in.job_type,
+        job_in.params,
+        priority=job_in.priority or current_user.priority or "NORMAL",
+        energy_mode=job_in.energy_mode or "BALANCED"
+    )
+
+    # 6. Generate input summary for dashboard display
     input_summary = _generate_input_summary(job_in.job_type, job_in.params)
 
     now = datetime.now(timezone.utc)
-    strategy = job_in.scheduler_strategy or "capacity_based"
+    strategy = job_in.scheduler_strategy or workload_prof.get("recommended_strategy", "adaptive_hybrid")
     priority = job_in.priority or current_user.priority or "NORMAL"
+    energy_mode = job_in.energy_mode or "BALANCED"
+
+    # 7. Check & Deduct Compute Credits
+    credit_cost = 5.0 if not job_in.requires_gpu else 25.0
+    if getattr(current_user, "credits_balance", 500.0) is not None:
+        if current_user.credits_balance < credit_cost and current_user.role != "admin":
+            raise HTTPException(status_code=402, detail=f"Insufficient compute credits ({current_user.credits_balance:.1f} available, {credit_cost} required)")
+        current_user.credits_balance = max(0.0, current_user.credits_balance - credit_cost)
+        current_user.credits_consumed_today = (current_user.credits_consumed_today or 0.0) + credit_cost
 
     initial_timeline = [
         {
             "timestamp": now.isoformat(),
             "event_type": "JOB_SUBMITTED",
             "message": f"Job '{job_in.name}' submitted by {current_user.username} ({current_user.role})",
-            "details": {"job_type": job_in.job_type, "strategy": strategy, "priority": priority}
+            "details": {"job_type": job_in.job_type, "strategy": strategy, "priority": priority, "energy_mode": energy_mode}
+        },
+        {
+            "timestamp": now.isoformat(),
+            "event_type": "WORKLOAD_PROFILED",
+            "message": f"Workload profiled: CPU={workload_prof.get('cpu_intensity')}, GPU={workload_prof.get('gpu_intensity')}, Recommended Strategy={workload_prof.get('recommended_strategy')}",
+            "details": workload_prof
         },
         {
             "timestamp": now.isoformat(),
@@ -92,15 +116,27 @@ def submit_job(
         job_type=job_in.job_type,
         scheduler_strategy=strategy,
         priority=priority,
+        energy_mode=energy_mode,
+        is_speculative_enabled=job_in.is_speculative_enabled if job_in.is_speculative_enabled is not None else True,
+        credits_cost=credit_cost,
+        workload_profile=workload_prof,
         status="pending",
         total_tasks=len(task_data_list),
-        requires_gpu=job_in.requires_gpu or False,
+        requires_gpu=job_in.requires_gpu or workload_prof.get("is_gpu_required", False),
         min_vram_gb=job_in.min_vram_gb or 0.0,
         params=job_in.params,
         input_summary=input_summary,
         timeline=initial_timeline,
     )
     db.add(db_job)
+    
+    # Record credit transaction
+    db.add(models.CreditTransaction(
+        user_id=current_user.id,
+        amount=-credit_cost,
+        description=f"Job submission: {job_in.name} ({job_in.job_type})"
+    ))
+
     db.commit()
     db.refresh(db_job)
 

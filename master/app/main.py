@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from .db.database import engine, Base, get_db
 from .db import models
-from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks
+from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks, marketplace, simulation
 from .network.ws_manager import manager
 from .network.discovery import start_discovery_server
 from .engine.scheduler import (
@@ -32,6 +32,7 @@ from .engine.scheduler import (
 )
 from .engine.fault_detector import fault_detector
 from .engine.ai_scheduler import periodic_training_loop
+from .engine.straggler_detector import straggler_watchdog_loop
 from .engine.aggregator import try_aggregate_job
 from .engine.analytics import get_cluster_alerts
 from .engine.metrics_engine import (
@@ -51,7 +52,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="CoCompute Master Node",
     description="Intelligent Distributed Computing Framework for Dynamic Resource-Aware Task Scheduling",
-    version="2.0.0"
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -67,6 +68,9 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(workers.router, prefix="/api/v1/workers", tags=["workers"])
 app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
 app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
+app.include_router(marketplace.router)
+app.include_router(marketplace.credits_router)
+app.include_router(simulation.router)
 app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["metrics"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(benchmarks.router, prefix="/api/v1/benchmarks", tags=["benchmarks"])
@@ -115,10 +119,13 @@ async def startup_event():
     # Start periodic AI model training
     asyncio.create_task(periodic_training_loop())
 
+    # Start Straggler Watchdog & Speculative Execution Engine (CoCompute 3.0)
+    asyncio.create_task(straggler_watchdog_loop())
+
     # Start dashboard broadcast loop
     asyncio.create_task(_dashboard_broadcast_loop())
 
-    logger.info("All CoCompute Master background services initialized.")
+    logger.info("All CoCompute Master background services initialized (including CoCompute 3.0 Intelligence Engines).")
 
 
 async def _dashboard_broadcast_loop():
@@ -397,6 +404,44 @@ async def websocket_endpoint(
                 task = db.query(models.Task).filter(models.Task.id == db_chunk.task_id).first()
                 if task:
                     try_aggregate_job(db, task.job_id)
+
+            elif data.get("type") in ("PULL_CHUNK", "STEAL_CHUNK"):
+                # Dynamic Work Stealing: worker proactively pulls the next available chunk
+                db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
+                if db_worker and getattr(db_worker, "trust_status", "trusted") != "rejected":
+                    pending_chunk = db.query(models.TaskChunk).filter(models.TaskChunk.status == "pending").first()
+                    if pending_chunk:
+                        task = db.query(models.Task).filter(models.Task.id == pending_chunk.task_id).first()
+                        job = db.query(models.Job).filter(models.Job.id == task.job_id).first() if task else None
+
+                        pending_chunk.attempt_count = (pending_chunk.attempt_count or 0) + 1
+                        attempt_uid = f"ATT-{pending_chunk.id:04d}-{pending_chunk.attempt_count:02d}"
+
+                        attempt = models.ChunkAttempt(
+                            attempt_uid=attempt_uid,
+                            chunk_id=pending_chunk.id,
+                            worker_id=db_worker.id,
+                            attempt_number=pending_chunk.attempt_count,
+                            status="assigned"
+                        )
+                        db.add(attempt)
+                        pending_chunk.worker_id = db_worker.id
+                        pending_chunk.status = "assigned"
+                        pending_chunk.assigned_at = datetime.now(timezone.utc)
+                        db_worker.running_tasks = (db_worker.running_tasks or 0) + 1
+                        db.commit()
+
+                        await websocket.send_json({
+                            "action": "EXECUTE",
+                            "chunk_id": pending_chunk.id,
+                            "chunk_uid": pending_chunk.chunk_uid or f"CHUNK-{pending_chunk.id}",
+                            "attempt_id": attempt_uid,
+                            "job_id": job.id if job else None,
+                            "job_uid": job.job_uid if job else "",
+                            "task_type": job.job_type if job else "generic_python",
+                            "payload": pending_chunk.input_data or {}
+                        })
+
 
     except WebSocketDisconnect:
         manager.disconnect(worker_uid)

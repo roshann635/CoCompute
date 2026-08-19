@@ -6,7 +6,7 @@ import {
   FileText, Search, RefreshCw, Bell, BellOff, X, Settings,
   ChevronRight, Terminal, Network, Database, Layers, Eye,
   ArrowUpRight, ArrowDownRight, Gauge, Sliders, Info, AlertCircle,
-  Download, FileDown, History, GitCommit, FolderGit2, Award, FileCode, CheckSquare
+  Download, FileDown, History, GitCommit, FolderGit2, Award, FileCode, CheckSquare, Coins, Leaf
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
@@ -73,8 +73,8 @@ function AuthScreen({ onAuth }) {
               <Zap className="text-primary w-7 h-7" />
             </div>
           </div>
-          <h1 className="text-3xl font-extrabold gradient-text">CoCompute</h1>
-          <p className="text-gray-400 text-sm">Enterprise Distributed Computing Platform</p>
+          <h1 className="text-3xl font-extrabold gradient-text">CoCompute 3.0</h1>
+          <p className="text-gray-400 text-sm">Adaptive & Self-Healing Distributed Computing Platform</p>
         </div>
 
         <div className="flex bg-white/5 rounded-xl p-1">
@@ -100,12 +100,12 @@ function AuthScreen({ onAuth }) {
                   <option value="student" className="bg-[#18181c]">Student (2 jobs, 5 workers, CPU only)</option>
                   <option value="researcher" className="bg-[#18181c]">Researcher (5 jobs, 20 workers, 4 GPUs)</option>
                   <option value="faculty" className="bg-[#18181c]">Faculty (10 jobs, 50 workers, 8 GPUs)</option>
-                  <option value="admin" className="bg-[#18181c]">Administrator (Unlimited)</option>
+                  <option value="admin" className="bg-[#18181c]">Administrator (Full cluster management)</option>
                 </select>
               </div>
             </>
           )}
-          <input id="auth-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" type="password"
+          <input id="auth-password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password"
             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-primary outline-none transition" required />
           {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
           <button id="auth-submit" type="submit" disabled={loading}
@@ -150,6 +150,9 @@ function WorkerCard({ worker, onClick }) {
         <div className="flex items-center gap-2">
           <StIcon className={`w-3.5 h-3.5 ${st.color}`} />
           <span className="font-semibold text-white text-sm truncate max-w-[140px]">{worker.hostname || worker.worker_uid}</span>
+          {worker.is_simulated && (
+            <span className="text-[9px] bg-purple-500/20 text-purple-400 px-1.5 py-0.2 rounded border border-purple-500/30">SIM</span>
+          )}
         </div>
         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${st.bg} ${st.color} border ${st.border}`}>
           {st.label}
@@ -187,14 +190,14 @@ function WorkerCard({ worker, onClick }) {
       </div>
 
       <div className="flex items-center justify-between text-[11px] text-gray-500 border-t border-white/5 pt-2">
-        <span>Score: {((worker.reliability_score || 1) * 100).toFixed(0)}%</span>
-        <span>Tasks: {worker.total_tasks_completed || 0}</span>
+        <span>5-Factor Reliability: {((worker.reliability_score || 1) * 100).toFixed(0)}%</span>
+        <span className="capitalize text-accent font-semibold">{worker.lifecycle_state || 'healthy'}</span>
       </div>
     </div>
   );
 }
 
-// ─── Job Detail Modal (with Provenance, Timeline, Results & Download Formats) ─
+// ─── Job Detail & Result Modal ───────────────────────────────────────────────
 function JobDetailModal({ job, onClose }) {
   const [activeSection, setActiveSection] = useState('overview');
   const [provenance, setProvenance] = useState(null);
@@ -246,9 +249,22 @@ function JobDetailModal({ job, onClose }) {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="bg-white/5 p-3 rounded-xl"><span className="text-gray-400 block">Status:</span><span className="font-bold text-emerald-400 uppercase">{job.status}</span></div>
               <div className="bg-white/5 p-3 rounded-xl"><span className="text-gray-400 block">Type:</span><span className="font-bold text-white">{job.job_type}</span></div>
-              <div className="bg-white/5 p-3 rounded-xl"><span className="text-gray-400 block">Strategy:</span><span className="font-bold text-accent">{job.scheduler_strategy || 'capacity_based'}</span></div>
-              <div className="bg-white/5 p-3 rounded-xl"><span className="text-gray-400 block">Priority:</span><span className="font-bold text-yellow-400">{job.priority || 'NORMAL'}</span></div>
+              <div className="bg-white/5 p-3 rounded-xl"><span className="text-gray-400 block">Strategy:</span><span className="font-bold text-accent">{job.scheduler_strategy || 'adaptive_hybrid'}</span></div>
+              <div className="bg-white/5 p-3 rounded-xl"><span className="text-gray-400 block">Energy Mode:</span><span className="font-bold text-emerald-400 flex items-center gap-1"><Leaf className="w-3 h-3"/> {job.energy_mode || 'BALANCED'}</span></div>
             </div>
+
+            {/* Workload Profiler Insight */}
+            {job.workload_profile && (
+              <div className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl space-y-1.5">
+                <span className="text-blue-400 font-semibold block flex items-center gap-1.5"><Brain className="w-4 h-4"/> Workload Intelligence Profile:</span>
+                <div className="grid grid-cols-4 gap-2 text-[11px] text-gray-300 font-mono">
+                  <div>CPU: {(job.workload_profile.cpu_intensity * 100).toFixed(0)}%</div>
+                  <div>GPU: {(job.workload_profile.gpu_intensity * 100).toFixed(0)}%</div>
+                  <div>Memory: {(job.workload_profile.memory_intensity * 100).toFixed(0)}%</div>
+                  <div>Data: {job.workload_profile.estimated_data_mb} MB</div>
+                </div>
+              </div>
+            )}
 
             {job.result_preview && (
               <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl">
@@ -274,12 +290,19 @@ function JobDetailModal({ job, onClose }) {
         {/* ── PROVENANCE SECTION ── */}
         {activeSection === 'provenance' && (
           <div className="space-y-3">
-            <p className="text-xs text-gray-400 font-semibold uppercase">Chunk Provenance & Execution Attempts</p>
+            <p className="text-xs text-gray-400 font-semibold uppercase">Chunk Provenance & Speculative Replicas</p>
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {provenance?.chunks?.map(c => (
                 <div key={c.chunk_id} className="bg-white/5 border border-white/10 rounded-xl p-3 text-xs space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-white font-mono">{c.chunk_uid || `CHUNK-${c.chunk_id}`}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white font-mono">{c.chunk_uid || `CHUNK-${c.chunk_id}`}</span>
+                      {c.is_speculative && (
+                        <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/30 flex items-center gap-1 font-bold">
+                          ⚡ SPECULATIVE COPY
+                        </span>
+                      )}
+                    </div>
                     <span className={`px-2 py-0.5 rounded font-semibold uppercase ${c.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>{c.status}</span>
                   </div>
                   <div className="text-gray-400">Accepted Attempt: <span className="text-primary font-mono">{c.accepted_attempt_id || '—'}</span> | Node: <span className="text-white font-mono">{c.worker_uid || 'Unassigned'}</span></div>
@@ -287,7 +310,7 @@ function JobDetailModal({ job, onClose }) {
                     <div className="pl-3 border-l-2 border-primary/30 space-y-1">
                       {c.attempts.map((att, i) => (
                         <div key={i} className="text-[11px] text-gray-400 flex items-center justify-between">
-                          <span>Attempt #{att.attempt_number} ({att.worker_uid})</span>
+                          <span>Attempt #{att.attempt_number} ({att.worker_uid}) {att.is_speculative ? '⚡' : ''}</span>
                           <span className={att.status === 'completed' ? 'text-emerald-400' : 'text-red-400'}>{att.status} {att.duration_seconds ? `(${att.duration_seconds.toFixed(2)}s)` : ''}</span>
                         </div>
                       ))}
@@ -301,29 +324,25 @@ function JobDetailModal({ job, onClose }) {
 
         {/* ── TIMELINE SECTION ── */}
         {activeSection === 'timeline' && (
-          <div className="space-y-3">
-            <p className="text-xs text-gray-400 font-semibold uppercase">Chronological Event Milestone Logs</p>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {timeline.map((evt, i) => (
-                <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-3 text-xs flex items-start justify-between">
-                  <div>
-                    <span className="text-primary font-bold block">{evt.event_type}</span>
-                    <span className="text-white">{evt.message}</span>
-                  </div>
-                  <span className="text-gray-500 font-mono text-[10px]">{fmtTime(evt.timestamp)}</span>
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {timeline?.map((ev, i) => (
+              <div key={i} className="flex gap-3 text-xs p-2.5 bg-white/5 rounded-xl border border-white/5">
+                <span className="font-mono text-gray-500">{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                <div className="space-y-0.5">
+                  <span className="font-bold text-accent block">{ev.event_type}</span>
+                  <span className="text-gray-300">{ev.message}</span>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* ── RESULT & DOWNLOAD SECTION ── */}
+        {/* ── RESULT SECTION ── */}
         {activeSection === 'result' && (
           <div className="space-y-4">
-            <p className="text-xs text-gray-400 font-semibold uppercase">Aggregated Result & File Exports</p>
             {result?.aggregated_result ? (
               <>
-                <pre className="bg-black/40 p-4 rounded-xl text-emerald-400 font-mono text-xs overflow-auto max-h-72 border border-emerald-500/20">
+                <pre className="bg-black/50 p-4 rounded-xl text-emerald-400 font-mono text-xs overflow-auto max-h-72 border border-emerald-500/20">
                   {JSON.stringify(result.aggregated_result, null, 2)}
                 </pre>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
@@ -355,13 +374,14 @@ function JobDetailModal({ job, onClose }) {
   );
 }
 
-// ─── Submit Job Modal (Supports All 11 Standard Task Presets + Strategy + Quota)
+// ─── Submit Job Modal ────────────────────────────────────────────────────────
 function SubmitJobModal({ show, onClose, token }) {
   const [jobType, setJobType] = useState('sorting');
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
-  const [strategy, setStrategy] = useState('capacity_based');
+  const [strategy, setStrategy] = useState('adaptive_hybrid');
   const [priority, setPriority] = useState('NORMAL');
+  const [energyMode, setEnergyMode] = useState('BALANCED');
   const [requiresGpu, setRequiresGpu] = useState(false);
   const [minVram, setMinVram] = useState(4.0);
   const [loading, setLoading] = useState(false);
@@ -409,6 +429,8 @@ function SubmitJobModal({ show, onClose, token }) {
           job_type: jobType,
           scheduler_strategy: strategy,
           priority: priority,
+          energy_mode: energyMode,
+          is_speculative_enabled: true,
           params: parsed,
           requires_gpu: requiresGpu,
           min_vram_gb: requiresGpu ? minVram : 0.0
@@ -426,7 +448,7 @@ function SubmitJobModal({ show, onClose, token }) {
     <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="glass-panel p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4 scale-in" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-white/10 pb-3">
-          <h2 className="text-lg font-bold text-white flex items-center gap-2"><Play className="w-5 h-5 text-primary" /> Submit Distributed Job</h2>
+          <h2 className="text-lg font-bold text-white flex items-center gap-2"><Play className="w-5 h-5 text-primary" /> Submit Distributed Job (CoCompute 3.0)</h2>
           <button onClick={onClose} className="p-1 rounded text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
         </div>
 
@@ -454,56 +476,52 @@ function SubmitJobModal({ show, onClose, token }) {
             <label className="text-xs text-gray-400 block mb-1">Scheduler Strategy</label>
             <select value={strategy} onChange={e => setStrategy(e.target.value)}
               className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none focus:ring-2 focus:ring-primary">
-              <option value="capacity_based" className="bg-[#18181c]">Capacity Based (Hardware + Reliability)</option>
-              <option value="round_robin" className="bg-[#18181c]">Round Robin (Uniform Rotation)</option>
-              <option value="least_loaded" className="bg-[#18181c]">Least Loaded (Min CPU/RAM)</option>
-              <option value="gpu_aware" className="bg-[#18181c]">GPU Aware (VRAM & Thermal)</option>
-              <option value="network_aware" className="bg-[#18181c]">Network Aware (Bandwidth/Latency)</option>
-              <option value="priority_based" className="bg-[#18181c]">Priority Based (User Quota Weight)</option>
-              <option value="fair_share" className="bg-[#18181c]">Fair Share (Equal Multi-User Dist)</option>
-              <option value="ai_predictive" className="bg-[#18181c]">AI Predictive (ML Runtime Model)</option>
+              <option value="adaptive_hybrid" className="bg-[#18181c]">Adaptive Hybrid Scheduler (AHS - Auto)</option>
+              <option value="capacity_based" className="bg-[#18181c]">Capacity Based (Cores + RAM + Reliability)</option>
+              <option value="least_loaded" className="bg-[#18181c]">Least Loaded (Minimum Utilization)</option>
+              <option value="gpu_aware" className="bg-[#18181c]">GPU Aware (VRAM & CUDA Preferred)</option>
+              <option value="network_aware" className="bg-[#18181c]">Network Aware (Lowest Latency)</option>
+              <option value="priority_based" className="bg-[#18181c]">Priority Based (Role Weighting)</option>
+              <option value="fair_share" className="bg-[#18181c]">Fair Share (Multi-User Balance)</option>
+              <option value="ai_predictive" className="bg-[#18181c]">AI Predictive (ML Execution Model)</option>
+              <option value="energy_aware" className="bg-[#18181c]">Energy Aware (🌱 Green Eco Mode)</option>
             </select>
           </div>
         </div>
 
-        {/* Priority & GPU */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white/5 p-3 rounded-xl border border-white/10">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Execution Priority</label>
-            <select value={priority} onChange={e => setPriority(e.target.value)}
-              className="w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none">
-              <option value="NORMAL" className="bg-[#18181c]">NORMAL</option>
-              <option value="HIGH" className="bg-[#18181c]">HIGH (Priority Queue)</option>
-              <option value="CRITICAL" className="bg-[#18181c]">CRITICAL (Preempts standard queue)</option>
+            <label className="text-xs text-gray-400 block mb-1">Energy & Carbon Optimization</label>
+            <select value={energyMode} onChange={e => setEnergyMode(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none focus:ring-2 focus:ring-primary">
+              <option value="BALANCED" className="bg-[#18181c]">BALANCED (Pareto Efficiency)</option>
+              <option value="ECO" className="bg-[#18181c]">ECO (🌱 Minimal Carbon Footprint)</option>
+              <option value="FAST" className="bg-[#18181c]">FAST (⚡ Maximum Performance)</option>
             </select>
           </div>
-          <div className="flex items-center justify-between pt-4">
-            <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
-              <input type="checkbox" checked={requiresGpu} onChange={e => setRequiresGpu(e.target.checked)} className="rounded accent-emerald-500" />
-              <span>Require GPU / CUDA</span>
-            </label>
-            {requiresGpu && (
-              <div className="flex items-center gap-1">
-                <input type="number" value={minVram} onChange={e => setMinVram(Number(e.target.value))} className="w-14 bg-black/40 border border-white/10 rounded px-2 py-1 text-xs text-emerald-400 font-mono" />
-                <span className="text-[10px] text-gray-400">GB VRAM</span>
-              </div>
-            )}
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Priority Tier</label>
+            <select value={priority} onChange={e => setPriority(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none focus:ring-2 focus:ring-primary">
+              <option value="NORMAL" className="bg-[#18181c]">NORMAL</option>
+              <option value="HIGH" className="bg-[#18181c]">HIGH</option>
+              <option value="CRITICAL" className="bg-[#18181c]">CRITICAL</option>
+            </select>
           </div>
         </div>
 
-        {/* Parameters editor */}
         <div>
-          <label className="text-xs text-gray-400 block mb-1 uppercase font-semibold">Parameters JSON</label>
-          <textarea rows={6} value={paramsJson} onChange={e => setParamsJson(e.target.value)}
-            className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-emerald-400 font-mono outline-none focus:ring-2 focus:ring-primary" />
+          <label className="text-xs text-gray-400 block mb-1">Task Payload (JSON)</label>
+          <textarea value={paramsJson} onChange={e => setParamsJson(e.target.value)} rows={6}
+            className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-xs text-gray-200 font-mono outline-none focus:ring-2 focus:ring-primary" />
           {jsonError && <p className="text-red-400 text-xs mt-1">{jsonError}</p>}
         </div>
 
-        <div className="flex gap-3 pt-2">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-gray-400 hover:text-white transition text-xs font-semibold">Cancel</button>
+        <div className="flex justify-end gap-2 pt-2 border-t border-white/10">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs text-gray-400 hover:text-white transition">Cancel</button>
           <button onClick={submit} disabled={loading}
-            className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-blue-500 text-white font-semibold text-xs transition flex items-center justify-center gap-1.5 shadow-lg shadow-primary/20">
-            {loading ? <Loader className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />} Submit Task
+            className="px-5 py-2 rounded-xl text-xs font-semibold bg-primary hover:bg-blue-500 text-white transition flex items-center gap-2 shadow-lg shadow-primary/20">
+            {loading ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />} Submit Workload
           </button>
         </div>
       </div>
@@ -511,92 +529,261 @@ function SubmitJobModal({ show, onClose, token }) {
   );
 }
 
-// ─── Benchmarking Suite Component (Real Measured Cluster Values Only) ─────────
-function BenchmarksSuite({ token }) {
-  const [scalabilityData, setScalabilityData] = useState(null);
-  const [schedulerData, setSchedulerData] = useState(null);
-  const [runningScalability, setRunningScalability] = useState(false);
-  const [runningSchedulers, setRunningSchedulers] = useState(false);
+// ─── Marketplace & Compute Pool Suite Component ─────────────────────────────
+function MarketplaceSuite({ user, token }) {
+  const [pool, setPool] = useState(null);
+  const [credits, setCredits] = useState(null);
+  const [pendingWorkers, setPendingWorkers] = useState([]);
+  const [loading, setLoading] = useState(false);
 
-  const fetchBenchmarks = useCallback(async () => {
+  const fetchMarketplace = useCallback(async () => {
     try {
-      const [scRes, shRes] = await Promise.all([
-        fetch(`${API}/benchmarks/scalability`),
-        fetch(`${API}/benchmarks/schedulers`)
+      const [pRes, cRes, wRes] = await Promise.all([
+        fetch(`${API}/marketplace/pool`),
+        fetch(`${API}/credits/balance`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`${API}/workers/trust/pending`, { headers: { 'Authorization': `Bearer ${token}` } })
       ]);
-      if (scRes.ok) setScalabilityData(await scRes.json());
-      if (shRes.ok) setSchedulerData(await shRes.json());
-    } catch (e) { console.error('Error fetching benchmarks:', e); }
-  }, []);
+      if (pRes.ok) setPool(await pRes.json());
+      if (cRes.ok) setCredits(await cRes.json());
+      if (wRes.ok) setPendingWorkers(await wRes.json());
+    } catch (e) { console.error(e); }
+  }, [token]);
 
-  useEffect(() => { fetchBenchmarks(); }, [fetchBenchmarks]);
+  useEffect(() => { fetchMarketplace(); }, [fetchMarketplace]);
 
-  const triggerScalability = async () => {
-    setRunningScalability(true);
+  const handleApprove = async (uid, approve) => {
     try {
-      const res = await fetch(`${API}/benchmarks/scalability/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ task_type: 'sorting', worker_counts: [1, 5, 10, 25, 50, 100] })
-      });
-      if (res.ok) setScalabilityData(await res.json());
-    } catch (e) { alert('Benchmark failed'); }
-    finally { setRunningScalability(false); }
-  };
-
-  const triggerSchedulers = async () => {
-    setRunningSchedulers(true);
-    try {
-      const res = await fetch(`${API}/benchmarks/schedulers/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ task_type: 'sorting' })
-      });
-      if (res.ok) setSchedulerData(await res.json());
-    } catch (e) { alert('Scheduler benchmark failed'); }
-    finally { setRunningSchedulers(false); }
+      const endpoint = approve ? `/workers/${uid}/approve` : `/workers/${uid}/reject`;
+      await fetch(`${API}${endpoint}`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+      fetchMarketplace();
+    } catch (e) { alert(e.message); }
   };
 
   return (
     <div className="space-y-5">
-      {/* Banner */}
-      <div className="glass-panel p-5 border-l-4 border-l-primary flex items-center justify-between">
+      {/* Compute Pool Summary Banner */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <StatCard label="Pool Cores" value={pool?.total_cpu_cores || 0} icon={Cpu} color="text-primary" />
+        <StatCard label="Pool RAM" value={`${pool?.total_ram_gb || 0} GB`} icon={HardDrive} color="text-purple-400" />
+        <StatCard label="Pool GPUs" value={pool?.total_gpus || 0} icon={Zap} color="text-emerald-400" />
+        <StatCard label="Pool VRAM" value={`${pool?.total_vram_gb || 0} GB`} icon={Database} color="text-accent" />
+        <StatCard label="Utilization" value={`${pool?.pool_utilization_pct || 0}%`} icon={Gauge} color="text-yellow-400" />
+        <StatCard label="Online Nodes" value={`${pool?.online_workers || 0} / ${pool?.total_workers || 0}`} icon={Server} color="text-emerald-400" />
+      </div>
+
+      {/* Credit Balance Card */}
+      <div className="glass-panel p-5 grid grid-cols-1 md:grid-cols-4 gap-4 border-l-4 border-l-primary">
         <div>
-          <h2 className="text-base font-bold text-white flex items-center gap-2"><Award className="w-5 h-5 text-primary" /> Live Cluster Benchmarking Suite</h2>
-          <p className="text-xs text-gray-400 mt-1">Real-measured cluster execution metrics. Skipped data points reflect insufficient online physical nodes.</p>
+          <span className="text-gray-400 text-xs block">Available Credits</span>
+          <span className="text-xl font-bold text-primary font-mono">{credits?.credits_balance || 0} Credits</span>
         </div>
-        <div className="flex gap-2">
-          <button onClick={triggerScalability} disabled={runningScalability}
-            className="px-3 py-2 bg-primary/20 border border-primary/40 text-primary hover:bg-primary/30 rounded-xl text-xs font-semibold transition flex items-center gap-1.5">
-            {runningScalability ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />} Run Scalability Test
-          </button>
-          <button onClick={triggerSchedulers} disabled={runningSchedulers}
-            className="px-3 py-2 bg-accent/20 border border-accent/40 text-accent hover:bg-accent/30 rounded-xl text-xs font-semibold transition flex items-center gap-1.5">
-            {runningSchedulers ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Sliders className="w-3.5 h-3.5" />} Compare Schedulers
-          </button>
+        <div>
+          <span className="text-gray-400 text-xs block">Daily Allowance</span>
+          <span className="text-xl font-bold text-white font-mono">{credits?.credits_daily_quota || 0} / day</span>
+        </div>
+        <div>
+          <span className="text-gray-400 text-xs block">Consumed Today</span>
+          <span className="text-xl font-bold text-accent font-mono">{credits?.credits_consumed_today || 0} Credits</span>
+        </div>
+        <div>
+          <span className="text-gray-400 text-xs block">Institutional Tier</span>
+          <span className="text-xl font-bold text-emerald-400 uppercase">{credits?.role || user?.role}</span>
         </div>
       </div>
 
-      {/* Scalability Table & Chart */}
+      {/* Pending Worker Enrollment Approvals (Admin Gate) */}
+      <div className="glass-panel p-5 space-y-3">
+        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+          <Shield className="w-4 h-4 text-accent" /> Worker Trust & Secure Enrollment Queue ({pendingWorkers.length})
+        </h3>
+        {pendingWorkers.length === 0 ? (
+          <p className="text-xs text-gray-500 py-4">No pending worker enrollment requests. All active nodes are verified and trusted.</p>
+        ) : (
+          <div className="space-y-2">
+            {pendingWorkers.map(w => (
+              <div key={w.worker_uid} className="flex items-center justify-between bg-white/5 p-3 rounded-xl border border-white/10 text-xs">
+                <div>
+                  <span className="font-bold text-white font-mono mr-2">{w.worker_uid}</span>
+                  <span className="text-gray-400">{w.hostname} ({w.ip_address}) — {w.cpu_model} ({w.cpu_cores} cores, {w.ram_total}GB RAM)</span>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => handleApprove(w.worker_uid, true)}
+                    className="px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-semibold transition">
+                    Approve
+                  </button>
+                  <button onClick={() => handleApprove(w.worker_uid, false)}
+                    className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 rounded-lg font-semibold transition">
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Digital Twin Simulation Suite Component ─────────────────────────────────
+function SimulationSuite({ user, token }) {
+  const [status, setStatus] = useState(null);
+  const [nodeCount, setNodeCount] = useState(10);
+  const [gpuRatio, setGpuRatio] = useState(0.3);
+  const [latency, setLatency] = useState(5.0);
+  const [failureProb, setFailureProb] = useState(0.02);
+  const [loading, setLoading] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/simulation/status`);
+      if (res.ok) setStatus(await res.json());
+    } catch (e) { console.error(e); }
+  }, []);
+
+  useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  const startSim = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/simulation/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          worker_count: nodeCount,
+          gpu_ratio: gpuRatio,
+          network_latency_ms: latency,
+          failure_probability: failureProb
+        })
+      });
+      if (res.ok) fetchStatus();
+    } catch (e) { alert(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const stopSim = async () => {
+    setLoading(true);
+    try {
+      await fetch(`${API}/simulation/stop`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      fetchStatus();
+    } catch (e) { alert(e.message); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="glass-panel p-5 space-y-4">
+        <div className="flex justify-between items-center">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2"><Terminal className="w-4 h-4 text-purple-400" /> Cluster Digital Twin & Simulator</h3>
+            <p className="text-xs text-gray-400 mt-0.5">Scale virtual cluster nodes up to 100 machines for large-scale algorithmic evaluation.</p>
+          </div>
+          {status?.simulation_active ? (
+            <button onClick={stopSim} disabled={loading}
+              className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-xl text-xs font-semibold transition">
+              Stop Simulation
+            </button>
+          ) : (
+            <button onClick={startSim} disabled={loading}
+              className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-xl text-xs font-semibold transition">
+              Launch Digital Twin Nodes
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+          <div>
+            <label className="text-gray-400 block mb-1">Simulated Workers: {nodeCount}</label>
+            <input type="range" min="2" max="100" value={nodeCount} onChange={e => setNodeCount(Number(e.target.value))} className="w-full" />
+          </div>
+          <div>
+            <label className="text-gray-400 block mb-1">GPU Ratio: {(gpuRatio * 100).toFixed(0)}%</label>
+            <input type="range" min="0" max="1" step="0.1" value={gpuRatio} onChange={e => setGpuRatio(Number(e.target.value))} className="w-full" />
+          </div>
+          <div>
+            <label className="text-gray-400 block mb-1">Latency: {latency} ms</label>
+            <input type="range" min="1" max="50" value={latency} onChange={e => setLatency(Number(e.target.value))} className="w-full" />
+          </div>
+          <div>
+            <label className="text-gray-400 block mb-1">Failure Prob: {(failureProb * 100).toFixed(0)}%</label>
+            <input type="range" min="0" max="0.1" step="0.01" value={failureProb} onChange={e => setFailureProb(Number(e.target.value))} className="w-full" />
+          </div>
+        </div>
+
+        {status?.simulation_active && (
+          <div className="border-t border-white/10 pt-3 space-y-2">
+            <span className="text-xs text-purple-400 font-semibold block">Active Digital Twin Nodes ({status?.simulated_workers_count})</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-60 overflow-y-auto">
+              {status?.simulated_workers?.map(w => (
+                <div key={w.worker_uid} className="bg-purple-500/10 border border-purple-500/20 p-2.5 rounded-xl text-xs">
+                  <div className="font-bold text-white font-mono">{w.worker_uid}</div>
+                  <div className="text-[11px] text-gray-400">{w.cpu_cores} Cores | {w.ram_total}GB | {w.gpu_model || 'CPU'}</div>
+                  <div className="text-[10px] text-emerald-400 mt-1">Reliability: {(w.reliability_score * 100).toFixed(0)}%</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Benchmarks Suite Component ─────────────────────────────────────────────
+function BenchmarksSuite({ token }) {
+  const [scalabilityData, setScalabilityData] = useState(null);
+  const [schedulerData, setSchedulerData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchBenchmarks = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [scRes, schRes] = await Promise.all([
+        fetch(`${API}/benchmarks/scalability`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`${API}/benchmarks/schedulers`, { headers: { 'Authorization': `Bearer ${token}` } })
+      ]);
+      if (scRes.ok) setScalabilityData(await scRes.json());
+      if (schRes.ok) setSchedulerData(await schRes.json());
+    } catch (e) { console.error('Benchmark fetch error', e); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { fetchBenchmarks(); }, [fetchBenchmarks]);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-base font-bold text-white flex items-center gap-2"><Award className="w-5 h-5 text-primary" /> Real-Cluster Benchmarking Suite</h2>
+          <p className="text-xs text-gray-400 mt-0.5">Executes exclusively against connected cluster nodes. Speedup: <span className="font-mono text-primary">S = T_1 / T_N</span>.</p>
+        </div>
+        <button onClick={fetchBenchmarks} disabled={loading}
+          className="px-4 py-2 rounded-xl text-xs font-semibold bg-primary hover:bg-blue-500 text-white transition flex items-center gap-2 shadow-lg shadow-primary/20">
+          {loading ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} Run Suite
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Scalability Table */}
         <div className="glass-panel p-5">
-          <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-emerald-400" /> Scalability & Speedup Table</h3>
+          <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-emerald-400" /> Scalability Speedup Curve</h3>
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-white/10 text-gray-500 text-left">
-                <th className="py-2">Nodes (N)</th>
-                <th className="py-2">Status</th>
-                <th className="py-2">Time (s)</th>
-                <th className="py-2">Speedup (S)</th>
+                <th className="py-2">Nodes</th>
+                <th className="py-2">Exec Time</th>
+                <th className="py-2">Speedup</th>
                 <th className="py-2">Efficiency</th>
               </tr>
             </thead>
             <tbody>
               {scalabilityData?.results?.map(r => (
                 <tr key={r.workers} className="border-b border-white/5 hover:bg-white/5">
-                  <td className="py-2 font-mono font-bold text-white">{r.workers} node{r.workers !== 1 ? 's' : ''}</td>
-                  <td className="py-2"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${r.status === 'MEASURED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-yellow-500/20 text-yellow-400'}`}>{r.status}</span></td>
-                  <td className="py-2 font-mono text-gray-300">{r.execution_time_sec != null ? `${r.execution_time_sec}s` : '—'}</td>
+                  <td className="py-2 font-bold text-white">{r.workers} Node(s)</td>
+                  <td className="py-2 font-mono text-gray-300">{r.execution_time_sec != null ? `${r.execution_time_sec}s` : <span className="text-gray-500 italic">{r.note || 'Skipped'}</span>}</td>
                   <td className="py-2 font-mono text-primary font-bold">{r.speedup != null ? `${r.speedup}x` : '—'}</td>
                   <td className="py-2 font-mono text-emerald-400">{r.efficiency_pct != null ? `${r.efficiency_pct}%` : '—'}</td>
                 </tr>
@@ -763,7 +950,7 @@ function App() {
   const [rankings, setRankings] = useState([]);
   const [logs, setLogs] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  const [schedulerAlgo, setSchedulerAlgo] = useState('capacity_based');
+  const [schedulerAlgo, setSchedulerAlgo] = useState('adaptive_hybrid');
   const [dismissedAlerts, setDismissedAlerts] = useState(new Set());
 
   const [showSubmit, setShowSubmit] = useState(false);
@@ -850,13 +1037,15 @@ function App() {
   const activeAlerts = alerts.filter(a => !dismissedAlerts.has(a.id || a.type + a.timestamp));
 
   const TABS = [
-    { id: 'overview',   label: 'Overview',   icon: Activity },
-    { id: 'tasks',      label: 'Jobs & Queue', icon: Clock },
-    { id: 'benchmarks', label: 'Benchmarks', icon: Award },
-    { id: 'projects',   label: 'Projects & Quota', icon: FolderGit2 },
-    { id: 'analytics',  label: 'Analytics',  icon: BarChart3 },
-    { id: 'workers',    label: 'Nodes',      icon: Server },
-    { id: 'logs',       label: 'Logs',       icon: FileText },
+    { id: 'overview',    label: 'Overview',      icon: Activity },
+    { id: 'tasks',       label: 'Jobs & Queue',  icon: Clock },
+    { id: 'marketplace', label: 'Pool & Credits',icon: Layers },
+    { id: 'simulation',  label: 'Digital Twin',  icon: Terminal },
+    { id: 'benchmarks',  label: 'Benchmarks',    icon: Award },
+    { id: 'projects',    label: 'Projects',      icon: FolderGit2 },
+    { id: 'analytics',   label: 'Analytics',     icon: BarChart3 },
+    { id: 'workers',     label: 'Nodes',         icon: Server },
+    { id: 'logs',        label: 'Logs',          icon: FileText },
   ];
 
   return (
@@ -868,17 +1057,17 @@ function App() {
             <div className="p-1.5 rounded-lg bg-primary/10 border border-primary/20">
               <Zap className="text-primary w-5 h-5" />
             </div>
-            <h1 className="text-xl font-extrabold gradient-text">CoCompute</h1>
+            <h1 className="text-xl font-extrabold gradient-text">CoCompute 3.0</h1>
             <div className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${wsStatus === 'connected' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'}`}>
               <div className={`w-1.5 h-1.5 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-400 blink' : 'bg-yellow-400'}`} />
-              {wsStatus === 'connected' ? 'Live Streaming' : 'Polling'}
+              {wsStatus === 'connected' ? 'Adaptive Hybrid' : 'Polling'}
             </div>
           </div>
 
           <nav className="flex gap-0.5 bg-white/5 rounded-xl p-1">
             {TABS.map(t => (
               <button key={t.id} onClick={() => setActiveTab(t.id)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium transition ${activeTab === t.id ? 'bg-primary/20 text-primary' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}>
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${activeTab === t.id ? 'bg-primary/20 text-primary' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}>
                 <t.icon className="w-3.5 h-3.5" /> {t.label}
               </button>
             ))}
@@ -887,7 +1076,7 @@ function App() {
           <div className="flex items-center gap-2">
             <button onClick={() => setShowSubmit(true)}
               className="bg-primary hover:bg-blue-500 transition text-white px-4 py-2 rounded-xl flex items-center gap-2 font-semibold shadow-lg shadow-primary/20 text-xs glow-primary">
-              <Play className="w-3.5 h-3.5 fill-current" /> Submit Job
+              <Play className="w-3.5 h-3.5 fill-current" /> Submit Workload
             </button>
             <div className="flex items-center gap-1.5 px-3 py-2 bg-white/5 rounded-xl border border-white/10 text-xs text-gray-400">
               <Shield className="w-3.5 h-3.5 text-accent" />
@@ -929,160 +1118,85 @@ function App() {
                 </div>
               </div>
 
+              {/* Leaderboard */}
               <div className="glass-panel p-5">
-                <h2 className="text-sm font-semibold mb-4 text-white flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-accent" /> Active Scheduling Policy
+                <h2 className="text-sm font-semibold mb-3 text-white flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-emerald-400" /> Worker Leaderboard
                 </h2>
-                <div className="bg-white/5 p-4 rounded-xl space-y-2 border border-white/10">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-gray-400">Current Strategy:</span>
-                    <span className="text-xs font-bold text-accent uppercase font-mono">{schedulerAlgo}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-gray-400">Redis Queue:</span>
-                    <span className="text-xs font-bold text-emerald-400 font-mono">jobs:high / normal</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-gray-400">Rescheduling Pub/Sub:</span>
-                    <span className="text-xs font-bold text-emerald-400 font-mono">cocompute:reschedule</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-gray-400">Fault Detection:</span>
-                    <span className="text-xs font-bold text-primary font-mono">&lt; 1s Immediate</span>
-                  </div>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {rankings.map((r, i) => (
+                    <div key={r.worker_uid} className="flex items-center justify-between p-2.5 bg-white/5 rounded-xl border border-white/5 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-gray-500 font-mono">#{i + 1}</span>
+                        <span className="text-white font-semibold">{r.worker_uid}</span>
+                      </div>
+                      <span className="text-primary font-mono font-bold">{(r.composite_score * 100).toFixed(0)} pts</span>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            </div>
-
-            {/* Workers grid */}
-            <div className="glass-panel p-5">
-              <h2 className="text-sm font-semibold mb-4 text-white flex items-center gap-2">
-                <Server className="w-4 h-4" /> Connected Worker Nodes ({workers.length})
-              </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-                {workers.map(w => <WorkerCard key={w.id} worker={w} onClick={() => {}} />)}
               </div>
             </div>
           </>
         )}
 
-        {/* ══ TASKS & QUEUE TAB ══ */}
+        {/* ══ JOBS TAB ══ */}
         {activeTab === 'tasks' && (
-          <div className="glass-panel overflow-hidden">
-            <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-white">Distributed Job Ledger</h2>
-              <button onClick={fetchAll} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white"><RefreshCw className="w-4 h-4" /></button>
+          <div className="glass-panel p-5 space-y-4">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2"><Clock className="w-4 h-4 text-accent" /> Active & Completed Jobs ({jobs.length})</h2>
+            <div className="space-y-2">
+              {jobs.map(j => (
+                <div key={j.id} onClick={() => setSelectedJob(j)}
+                  className="flex items-center justify-between p-3.5 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 transition cursor-pointer text-xs">
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-primary bg-primary/10 px-2 py-0.5 rounded">{j.job_uid || `#${j.id}`}</span>
+                    <div>
+                      <span className="font-bold text-white block">{j.name}</span>
+                      <span className="text-gray-400 text-[11px]">{j.job_type} | Strategy: <span className="text-accent">{j.scheduler_strategy}</span> | Energy: <span className="text-emerald-400">{j.energy_mode || 'BALANCED'}</span></span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`px-2 py-0.5 rounded-full font-bold uppercase text-[10px] ${j.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' : j.status === 'running' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                      {j.status}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-gray-500" />
+                  </div>
+                </div>
+              ))}
             </div>
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-white/10 text-left text-gray-500 uppercase tracking-wider">
-                  {['Job UID', 'Name', 'Type', 'Strategy', 'Priority', 'Status', 'Progress', 'Preview', 'Submitted'].map(h => (
-                    <th key={h} className="px-5 py-3">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {jobs.map(j => {
-                  const pct = j.total_tasks > 0 ? Math.round(((j.completed_tasks + j.failed_tasks) / j.total_tasks) * 100) : 0;
-                  return (
-                    <tr key={j.id} onClick={() => setSelectedJob(j)} className="border-b border-white/5 hover:bg-white/5 cursor-pointer">
-                      <td className="px-5 py-3 text-primary font-mono font-bold">{j.job_uid || `#${j.id}`}</td>
-                      <td className="px-5 py-3 text-white font-medium">{j.name}</td>
-                      <td className="px-5 py-3"><span className="bg-white/5 px-2 py-0.5 rounded border border-white/10 font-mono text-[11px]">{j.job_type}</span></td>
-                      <td className="px-5 py-3 text-accent capitalize">{j.scheduler_strategy || 'capacity'}</td>
-                      <td className="px-5 py-3 text-yellow-400 font-bold">{j.priority || 'NORMAL'}</td>
-                      <td className="px-5 py-3"><span className={`font-semibold uppercase ${j.status === 'completed' ? 'text-emerald-400' : j.status === 'failed' ? 'text-red-400' : 'text-blue-400'}`}>{j.status}</span></td>
-                      <td className="px-5 py-3">
-                        <div className="w-24 bg-white/10 rounded-full h-1.5">
-                          <div className={`h-1.5 rounded-full ${j.status === 'completed' ? 'bg-emerald-500' : 'bg-primary'}`} style={{ width: `${pct}%` }} />
-                        </div>
-                      </td>
-                      <td className="px-5 py-3 text-gray-300 font-mono truncate max-w-[180px]">{j.result_preview || '—'}</td>
-                      <td className="px-5 py-3 text-gray-500">{fmtTime(j.submission_time)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
           </div>
         )}
+
+        {/* ══ MARKETPLACE & COMPUTE POOL TAB ══ */}
+        {activeTab === 'marketplace' && <MarketplaceSuite user={user} token={token} />}
+
+        {/* ══ DIGITAL TWIN SIMULATION TAB ══ */}
+        {activeTab === 'simulation' && <SimulationSuite user={user} token={token} />}
 
         {/* ══ BENCHMARKS TAB ══ */}
         {activeTab === 'benchmarks' && <BenchmarksSuite token={token} />}
 
-        {/* ══ PROJECTS & QUOTAS TAB ══ */}
+        {/* ══ PROJECTS TAB ══ */}
         {activeTab === 'projects' && <ProjectsSuite user={user} token={token} jobs={jobs} />}
 
-        {/* ══ ANALYTICS TAB ══ */}
-        {activeTab === 'analytics' && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <StatCard label="Average Speedup" value={`${analytics?.avg_speedup?.toFixed(2) || '1.00'}x`} icon={Zap} color="text-accent" />
-              <StatCard label="Parallel Efficiency" value={`${((analytics?.avg_efficiency || 0) * 100).toFixed(1)}%`} icon={TrendingUp} color="text-emerald-400" />
-              <StatCard label="Cluster Health Score" value={`${c.efficiency || 95}%`} icon={Gauge} color="text-primary" />
-            </div>
-
-            {rankings.length > 0 && (
-              <div className="glass-panel overflow-hidden">
-                <div className="px-5 py-4 border-b border-white/10"><h2 className="text-sm font-semibold text-white">Node Reliability & Performance Ranking</h2></div>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-white/10 text-gray-500 text-left">
-                      {['Rank', 'Node', 'Completed', 'Failed', 'Reliability', 'Avg Time', 'Composite Score'].map(h => <th key={h} className="px-5 py-3">{h}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rankings.map((r, i) => (
-                      <tr key={r.worker_uid} className="border-b border-white/5 hover:bg-white/5">
-                        <td className="px-5 py-3 text-gray-400 font-bold">#{i + 1}</td>
-                        <td className="px-5 py-3 text-white font-medium">{r.hostname || r.worker_uid}</td>
-                        <td className="px-5 py-3 text-emerald-400">{r.tasks_completed}</td>
-                        <td className="px-5 py-3 text-red-400">{r.tasks_failed}</td>
-                        <td className="px-5 py-3 text-gray-300">{(r.reliability_score * 100).toFixed(0)}%</td>
-                        <td className="px-5 py-3 text-gray-300">{r.avg_execution_seconds.toFixed(2)}s</td>
-                        <td className="px-5 py-3 text-primary font-bold">{r.composite_score}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ══ WORKERS TAB ══ */}
+        {/* ══ NODES TAB ══ */}
         {activeTab === 'workers' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-            {workers.map(w => <WorkerCard key={w.id} worker={w} onClick={() => {}} />)}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {workers.map(w => <WorkerCard key={w.worker_uid} worker={w} onClick={setSelectedWorker} />)}
           </div>
         )}
 
         {/* ══ LOGS TAB ══ */}
         {activeTab === 'logs' && (
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              <input value={logSearch} onChange={e => setLogSearch(e.target.value)} placeholder="Filter audit logs..."
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs text-white outline-none focus:ring-2 focus:ring-primary" />
-              <button onClick={fetchAll} className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-xs text-gray-400 hover:text-white flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5" /> Refresh</button>
-            </div>
-            <div className="glass-panel overflow-hidden max-h-[600px] overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-white/10 text-gray-500 text-left">
-                    {['Timestamp', 'Level', 'Source', 'Message'].map(h => <th key={h} className="px-4 py-2.5">{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.filter(l => !logSearch || l.message?.toLowerCase().includes(logSearch.toLowerCase())).map(l => (
-                    <tr key={l.id} className="border-b border-white/5">
-                      <td className="px-4 py-2 text-gray-500 font-mono">{fmtTime(l.timestamp)}</td>
-                      <td className="px-4 py-2 font-bold text-primary">{l.level}</td>
-                      <td className="px-4 py-2 text-gray-400 font-mono">{l.source}</td>
-                      <td className="px-4 py-2 text-white">{l.message}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="glass-panel p-5 space-y-3">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2"><FileText className="w-4 h-4 text-primary" /> Cluster Audit & Event Logs</h2>
+            <div className="space-y-1 max-h-[600px] overflow-y-auto font-mono text-xs text-gray-300">
+              {logs.map((l, i) => (
+                <div key={i} className="p-2 bg-black/40 rounded-lg border border-white/5 flex gap-2">
+                  <span className="text-gray-500">{new Date(l.timestamp).toLocaleTimeString()}</span>
+                  <span className={l.level === 'ERROR' ? 'text-red-400' : 'text-primary'}>[{l.level}]</span>
+                  <span>{l.message}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}

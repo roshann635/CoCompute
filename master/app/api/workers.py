@@ -177,3 +177,47 @@ def deregister_worker(worker_uid: str, db: Session = Depends(database.get_db)):
 
     db.commit()
     return {"message": f"Worker {worker_uid} deregistered", "requeued_tasks": len(orphaned)}
+
+
+@router.get("/trust/pending")
+def get_pending_workers(db: Session = Depends(database.get_db)):
+    """List workers awaiting enrollment approval."""
+    pending = db.query(models.Worker).filter(models.Worker.trust_status == "pending").all()
+    return [
+        {
+            "worker_uid": w.worker_uid,
+            "hostname": w.hostname,
+            "ip_address": w.ip_address,
+            "cpu_model": w.cpu_model,
+            "cpu_cores": w.cpu_cores,
+            "ram_total": w.ram_total,
+            "gpu_model": w.gpu_model,
+            "trust_status": w.trust_status,
+            "enrolled_at": w.enrolled_at.isoformat() if w.enrolled_at else None
+        }
+        for w in pending
+    ]
+
+
+@router.post("/{worker_uid}/approve")
+def approve_worker(worker_uid: str, db: Session = Depends(database.get_db)):
+    """Approve a worker for cluster task execution."""
+    worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    worker.trust_status = "trusted"
+    worker.lifecycle_state = "healthy"
+    db.commit()
+    return {"worker_uid": worker_uid, "trust_status": "trusted", "message": f"Worker {worker_uid} approved successfully."}
+
+
+@router.post("/{worker_uid}/reject")
+def reject_worker(worker_uid: str, db: Session = Depends(database.get_db)):
+    """Reject a worker from receiving cluster tasks."""
+    worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    worker.trust_status = "rejected"
+    db.commit()
+    return {"worker_uid": worker_uid, "trust_status": "rejected", "message": f"Worker {worker_uid} enrollment rejected."}
+

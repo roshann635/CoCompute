@@ -1,4 +1,8 @@
-# Python bytecode & cache
+# ==============================================================================
+# CoCompute Comprehensive .gitignore
+# ==============================================================================
+
+# Python bytecode & compiled artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -43,6 +47,7 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+test_model_train.pkl
 
 # Node / Frontend Dashboard
 node_modules/
@@ -63,13 +68,18 @@ cocompute.db
 task_history.db
 storage/
 storage/**
+results/
+results/**
+minio_data/
+redis_data/
 
-# AI / ML checkpoints & weights
+# AI / ML checkpoints, datasets & weights
 *.pt
 *.pth
 *.pkl
 *.onnx
 *.bin
+*.h5
 model.pkl
 
 # IDEs & System files
@@ -80,6 +90,8 @@ Thumbs.db
 Desktop.ini
 *.swp
 *.swo
+.project
+.settings/
 
 # SSL / TLS Secrets & Certs
 ssl/certs/
@@ -89,7 +101,7 @@ ssl/certs/
 *.p12
 *.pfx
 
-# CoCompute runtime temp files
+# CoCompute runtime temp files, logs & artifacts
 .cocompute/
 .session/
 cocompute_outputs/
@@ -98,3 +110,6 @@ cocompute_cache/
 *.bak
 logs/
 *.log
+brain/
+.agents/
+.system_generated/

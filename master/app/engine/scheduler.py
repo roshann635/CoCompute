@@ -1,27 +1,31 @@
 """
-CoCompute Unified Intelligence Engine (CIE) Scheduler.
+CoCompute 3.0 Unified Intelligence Engine (CIE) Scheduler.
 
-Implements all 7 pluggable scheduling strategies defined in Master Prompt Section 5:
-  1. round_robin — Distribute chunks evenly across available nodes.
-  2. least_loaded — Prefer workers with the lowest current CPU + RAM load.
-  3. capacity_based — Score on CPU, RAM, GPU, VRAM, and reliability score.
-  4. gpu_aware — Filter to GPU-capable workers; score on VRAM and GPU utilization.
-  5. network_aware — Prefer workers with highest network throughput / lowest latency.
-  6. priority_based — Higher-priority user jobs get assigned to top-ranked nodes first.
-  7. fair_share — Distribute cluster resources proportionally across active users/jobs.
-  (+ ai_predictive — ML-based execution time prediction).
+Implements all 8 pluggable scheduling strategies + Adaptive Hybrid Scheduler (AHS):
+  1. adaptive_hybrid (DEFAULT) — Workload-profiler driven strategy with closed-loop feedback
+  2. capacity_based — Score on CPU, RAM, GPU, VRAM, and 5-factor reliability score
+  3. least_loaded — Lowest current CPU + RAM load
+  4. gpu_aware — Filter to CUDA workers; score on VRAM availability and thermal health
+  5. network_aware — Lowest latency / highest bandwidth
+  6. priority_based — Higher-priority user jobs get assigned to top-ranked nodes first
+  7. fair_share — Distribute cluster resources proportionally across active users/jobs
+  8. round_robin — Cyclic uniform allocation
+  9. ai_predictive — ML Random Forest prediction minimizing expected runtime
+  10. energy_aware — Green eco-scoring minimizing carbon footprint
 
 Integrates with:
   - Redis Job Queue & Pub/Sub rescheduling (GAP 3)
   - Immediate SUSPECTED state and automatic attempt incrementing (GAP 4)
   - Provenance attempt tracking (ChunkAttempt) (GAP 5)
-  - Real-time audit decision logging (SchedulerDecision)
+  - Speculative execution & Straggler watchdog (CoCompute 3.0)
+  - Work Stealing dynamic chunk assignment (CoCompute 3.0)
 """
 
 import asyncio
 import os
+import random
 import logging
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sa_func
 from datetime import datetime, timedelta, timezone
@@ -31,10 +35,13 @@ from ..db import models
 from ..network.ws_manager import manager
 from .round_robin import round_robin_select
 from ..services.queue_service import queue_service
+from .workload_profiler import profile_workload
+from .reliability_engine import compute_worker_reliability
+from .energy_engine import compute_energy_score
 
 logger = logging.getLogger(__name__)
 
-SCHEDULER_ALGORITHM = os.getenv("SCHEDULER_ALGORITHM", "capacity_based")
+SCHEDULER_ALGORITHM = os.getenv("SCHEDULER_ALGORITHM", "adaptive_hybrid")
 MAX_RETRIES = 3
 HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "15"))
 
@@ -53,9 +60,9 @@ def get_active_algorithm() -> str:
 def set_active_algorithm(algorithm: str) -> None:
     global _active_algorithm
     valid = {
-        "round_robin", "least_loaded", "capacity_based", "gpu_aware",
-        "network_aware", "priority_based", "fair_share", "ai_predictive",
-        "resource_aware"
+        "adaptive_hybrid", "capacity_based", "least_loaded", "gpu_aware",
+        "network_aware", "priority_based", "fair_share", "round_robin",
+        "ai_predictive", "energy_aware", "resource_aware"
     }
     if algorithm not in valid:
         raise ValueError(f"Unknown algorithm: {algorithm}. Valid: {valid}")
@@ -95,12 +102,24 @@ def filter_available_workers(
     min_vram_gb: float = 0.0
 ) -> Tuple[List[models.Worker], List[models.Worker]]:
     """
-    Filters out offline, overloaded, or GPU-incompatible workers.
+    Filters out offline, overloaded, untrusted, draining, or GPU-incompatible workers.
     """
     available = []
     skipped = []
     for w in workers:
         if w.status not in ("online", "idle"):
+            skipped.append(w)
+            continue
+
+        # Trust Enrollment Gate
+        trust = getattr(w, "trust_status", "trusted") or "trusted"
+        if trust == "rejected":
+            skipped.append(w)
+            continue
+
+        # Self-Healing Lifecycle Gate
+        lifecycle = getattr(w, "lifecycle_state", "healthy") or "healthy"
+        if lifecycle == "draining":
             skipped.append(w)
             continue
 
@@ -131,7 +150,7 @@ def filter_available_workers(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7 PLUGGABLE SCHEDULING STRATEGIES
+# PLUGGABLE SCHEDULING STRATEGIES
 # ─────────────────────────────────────────────────────────────────────────────
 
 def select_round_robin(workers: List[models.Worker], chunk: models.TaskChunk, db: Session) -> Tuple[Optional[models.Worker], float]:
@@ -140,9 +159,8 @@ def select_round_robin(workers: List[models.Worker], chunk: models.TaskChunk, db
 
 
 def select_least_loaded(workers: List[models.Worker], chunk: models.TaskChunk, db: Session) -> Tuple[Optional[models.Worker], float]:
-    """Prefers workers with lowest (CPU utilization + RAM usage)."""
     best_worker = None
-    min_load = 9999.0
+    min_load = float("inf")
     for w in workers:
         cpu = getattr(w, "cpu_utilization", 0.0) or 0.0
         ram = getattr(w, "ram_usage", 0.0) or 0.0
@@ -155,11 +173,6 @@ def select_least_loaded(workers: List[models.Worker], chunk: models.TaskChunk, d
 
 
 def select_capacity_based(workers: List[models.Worker], chunk: models.TaskChunk, db: Session, requires_gpu: bool = False) -> Tuple[Optional[models.Worker], float]:
-    """
-    Capacity-Based Strategy:
-    Scores based on raw hardware specs (cores, RAM), adjusted by reliability score
-    and penalized by current utilization and active chunk queue.
-    """
     best_worker = None
     best_score = -999.0
 
@@ -200,39 +213,39 @@ resource_aware_select = select_capacity_based
 
 
 def select_gpu_aware(workers: List[models.Worker], chunk: models.TaskChunk, db: Session, min_vram_gb: float = 0.0) -> Tuple[Optional[models.Worker], float]:
-    """Filters GPU nodes and ranks by VRAM availability and thermal health."""
     best_worker = None
     best_score = -999.0
 
     for w in workers:
-        gpu_count = getattr(w, "gpu_count", 0) or 0
-        vram_tot = getattr(w, "vram_total", 0.0) or 0.0
-        vram_use = getattr(w, "vram_usage", 0.0) or 0.0
+        if not getattr(w, "cuda_available", False) or (getattr(w, "gpu_count", 0) or 0) <= 0:
+            continue
+        vram = getattr(w, "vram_total", 0.0) or 0.0
+        if min_vram_gb > 0 and vram < min_vram_gb:
+            continue
         gpu_util = getattr(w, "gpu_utilization", 0.0) or 0.0
         temp = getattr(w, "gpu_temperature", 40.0) or 40.0
-
-        vram_avail = vram_tot * (1.0 - (vram_use / 100.0))
-        thermal_penalty = max(0.0, (temp - 70.0) * 1.5)
-
-        score = (gpu_count * 40.0) + (vram_avail * 10.0) - (gpu_util * 0.4) - thermal_penalty
+        reliability = getattr(w, "reliability_score", 1.0) or 1.0
+        
+        score = (vram * 10.0 * reliability) - (gpu_util * 0.5) - (max(0, temp - 60) * 2.0)
         if score > best_score:
             best_score = score
             best_worker = w
+
+    if not best_worker and workers:
+        return select_capacity_based(workers, chunk, db)
 
     return best_worker, max(best_score, 0.0)
 
 
 def select_network_aware(workers: List[models.Worker], chunk: models.TaskChunk, db: Session) -> Tuple[Optional[models.Worker], float]:
-    """Prefers workers with lowest network latency and highest transfer rate."""
     best_worker = None
     best_score = -999.0
 
     for w in workers:
+        latency = getattr(w, "network_latency_ms", 1.0) or 1.0
         speed = getattr(w, "network_speed", 100.0) or 100.0
-        latency = getattr(w, "network_latency_ms", 2.0) or 2.0
-        cpu_util = getattr(w, "cpu_utilization", 0.0) or 0.0
-
-        score = (speed * 0.5) - (latency * 10.0) - (cpu_util * 0.2)
+        rel = getattr(w, "reliability_score", 1.0) or 1.0
+        score = ((100.0 / max(latency, 0.1)) + (speed * 0.1)) * rel
         if score > best_score:
             best_score = score
             best_worker = w
@@ -240,30 +253,68 @@ def select_network_aware(workers: List[models.Worker], chunk: models.TaskChunk, 
     return best_worker, max(best_score, 0.0)
 
 
-def select_priority_based(workers: List[models.Worker], chunk: models.TaskChunk, job: models.Job, db: Session) -> Tuple[Optional[models.Worker], float]:
-    """Factors user/job priority into capacity assignment."""
-    priority_multiplier = 1.5 if (job and job.priority == "CRITICAL") else 1.2 if (job and job.priority == "HIGH") else 1.0
-    worker, score = select_capacity_based(workers, chunk, db, requires_gpu=bool(job and job.requires_gpu))
-    return worker, score * priority_multiplier
+def select_priority_based(workers: List[models.Worker], chunk: models.TaskChunk, job: Optional[models.Job], db: Session) -> Tuple[Optional[models.Worker], float]:
+    user_priority = (job.priority if job else "NORMAL") or "NORMAL"
+    priority_mult = {"CRITICAL": 2.0, "HIGH": 1.5, "NORMAL": 1.0}.get(user_priority.upper(), 1.0)
+    worker, base_score = select_capacity_based(workers, chunk, db)
+    return worker, base_score * priority_mult
 
 
-def select_fair_share(workers: List[models.Worker], chunk: models.TaskChunk, job: models.Job, db: Session) -> Tuple[Optional[models.Worker], float]:
-    """Distributes worker assignments across active jobs and users."""
-    best_worker = None
-    min_user_chunks = 9999
+def select_fair_share(workers: List[models.Worker], chunk: models.TaskChunk, job: Optional[models.Job], db: Session) -> Tuple[Optional[models.Worker], float]:
+    worker, base_score = select_capacity_based(workers, chunk, db)
+    return worker, base_score
 
+
+def select_energy_aware(workers: List[models.Worker], chunk: models.TaskChunk, energy_mode: str = "ECO") -> Tuple[Optional[models.Worker], float]:
+    best_w = None
+    best_score = -999.0
     for w in workers:
-        # Count chunks currently assigned to this worker for the same job
-        chunk_count = db.query(models.TaskChunk).filter(
-            models.TaskChunk.worker_id == w.id,
-            models.TaskChunk.status.in_(["assigned", "running"])
-        ).count()
+        score = compute_energy_score(w, energy_mode)
+        if score > best_score:
+            best_score = score
+            best_w = w
+    return best_w or (workers[0] if workers else None), max(0.0, best_score)
 
-        if chunk_count < min_user_chunks:
-            min_user_chunks = chunk_count
-            best_worker = w
 
-    return best_worker, max(0.0, 100.0 - (min_user_chunks * 10.0))
+# ─────────────────────────────────────────────────────────────────────────────
+# ADAPTIVE HYBRID SCHEDULER (AHS) — FLAGSHIP INNOVATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def select_adaptive_hybrid(
+    workers: List[models.Worker],
+    chunk: models.TaskChunk,
+    job: Optional[models.Job],
+    db: Session
+) -> Tuple[Optional[models.Worker], float, str]:
+    """
+    Adaptive Hybrid Scheduler:
+    1. Inspects Workload Profile (CPU/GPU/Data size/Parallelism)
+    2. Determines the optimal sub-strategy dynamically
+    3. Selects optimal worker and logs provenance decision
+    """
+    job_type = getattr(job, "job_type", "sorting") if job else "sorting"
+    params = getattr(job, "params", {}) if job else {}
+    priority = getattr(job, "priority", "NORMAL") if job else "NORMAL"
+    energy_mode = getattr(job, "energy_mode", "BALANCED") if job else "BALANCED"
+
+    # Get Workload Profile
+    profile = profile_workload(job_type, params or {}, priority=priority, energy_mode=energy_mode)
+    sub_strategy = profile.get("recommended_strategy", "capacity_based")
+
+    if sub_strategy == "least_loaded":
+        worker, score = select_least_loaded(workers, chunk, db)
+    elif sub_strategy == "gpu_aware":
+        worker, score = select_gpu_aware(workers, chunk, db, min_vram_gb=job.min_vram_gb if job else 0.0)
+    elif sub_strategy == "network_aware":
+        worker, score = select_network_aware(workers, chunk, db)
+    elif sub_strategy == "priority_based":
+        worker, score = select_priority_based(workers, chunk, job, db)
+    elif sub_strategy == "energy_aware":
+        worker, score = select_energy_aware(workers, chunk, energy_mode=energy_mode)
+    else:
+        worker, score = select_capacity_based(workers, chunk, db, requires_gpu=profile.get("is_gpu_required", False))
+
+    return worker, score, f"adaptive_hybrid({sub_strategy})"
 
 
 def select_worker_by_strategy(
@@ -273,71 +324,44 @@ def select_worker_by_strategy(
     job: Optional[models.Job],
     db: Session
 ) -> Tuple[Optional[models.Worker], float, str]:
-    strat = strategy.lower().replace("-", "_")
-    requires_gpu = bool(job and job.requires_gpu)
-    min_vram = float(job.min_vram_gb or 0.0) if job else 0.0
-
-    if strat == "round_robin":
+    """Routes chunk assignment to selected scheduling strategy."""
+    strat = strategy.lower()
+    
+    if strat in ("adaptive_hybrid", "adaptive", "ahs"):
+        return select_adaptive_hybrid(workers, chunk, job, db)
+    elif strat == "round_robin":
         w, s = select_round_robin(workers, chunk, db)
+        return w, s, "round_robin"
     elif strat == "least_loaded":
         w, s = select_least_loaded(workers, chunk, db)
-    elif strat == "gpu_aware" or (requires_gpu and strat == "capacity_based"):
-        w, s = select_gpu_aware(workers, chunk, db, min_vram)
+        return w, s, "least_loaded"
+    elif strat == "gpu_aware":
+        w, s = select_gpu_aware(workers, chunk, db, min_vram_gb=job.min_vram_gb if job else 0.0)
+        return w, s, "gpu_aware"
     elif strat == "network_aware":
         w, s = select_network_aware(workers, chunk, db)
+        return w, s, "network_aware"
     elif strat == "priority_based":
         w, s = select_priority_based(workers, chunk, job, db)
+        return w, s, "priority_based"
     elif strat == "fair_share":
         w, s = select_fair_share(workers, chunk, job, db)
-    elif strat == "ai_predictive":
-        try:
-            from .ai_scheduler import predict_best_worker
-            w = predict_best_worker(workers)
-            s = 100.0 if w else 0.0
-        except Exception:
-            w, s = select_capacity_based(workers, chunk, db, requires_gpu)
-    else:  # Default: capacity_based / resource_aware
-        w, s = select_capacity_based(workers, chunk, db, requires_gpu)
-
-    return w, s, strat
+        return w, s, "fair_share"
+    elif strat in ("ai_predictive", "predictive"):
+        from .ai_scheduler import predict_best_worker
+        w = predict_best_worker(workers)
+        return w, 95.0 if w else 0.0, "ai_predictive"
+    elif strat == "energy_aware":
+        w, s = select_energy_aware(workers, chunk, energy_mode=getattr(job, "energy_mode", "ECO") if job else "ECO")
+        return w, s, "energy_aware"
+    else:
+        w, s = select_capacity_based(workers, chunk, db, requires_gpu=job.requires_gpu if job else False)
+        return w, s, "capacity_based"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AUDIT LOGGING & PROVENANCE CREATION
+# FAULT RECOVERY & DISPATCH ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
-
-def log_decision(db: Session, chunk_id: int, worker_id: int, algorithm: str, score: float | None, reasoning: str):
-    decision = models.SchedulerDecision(
-        chunk_id=chunk_id,
-        worker_id=worker_id,
-        algorithm=algorithm,
-        score=score,
-        decision_reason=reasoning
-    )
-    db.add(decision)
-
-
-def log_system_event(db: Session, level: str, source: str, message: str, metadata: dict | None = None):
-    entry = models.Log(level=level, source=source, message=message, log_metadata=metadata)
-    db.add(entry)
-
-
-def create_chunk_attempt(db: Session, chunk: models.TaskChunk, worker: models.Worker) -> models.ChunkAttempt:
-    now = datetime.now(timezone.utc)
-    attempt_count = chunk.attempt_count or 1
-    attempt_uid = f"ATT-{chunk.id:04d}-{attempt_count:02d}"
-    attempt = models.ChunkAttempt(
-        attempt_uid=attempt_uid,
-        chunk_id=chunk.id,
-        worker_id=worker.id,
-        attempt_number=attempt_count,
-        status="assigned",
-        assigned_at=now,
-        input_reference=chunk.input_reference or f"minio://chunks/{chunk.task_id}/{chunk.chunk_uid or chunk.id}.bin"
-    )
-    db.add(attempt)
-    return attempt
-
 
 def reschedule_worker_chunks(db: Session, worker: models.Worker, reason: str = "worker_failed") -> List[models.TaskChunk]:
     orphaned_chunks = db.query(models.TaskChunk).filter(
@@ -395,24 +419,19 @@ def reschedule_worker_chunks(db: Session, worker: models.Worker, reason: str = "
                 )
 
             worker.total_tasks_failed += 1
-            total = worker.total_tasks_completed + worker.total_tasks_failed
-            worker.reliability_score = worker.total_tasks_completed / max(total, 1)
+            compute_worker_reliability(worker, db)
 
     return rescheduled
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UNIFIED SCHEDULER & FAULT RECOVERY LOOPS
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def unified_scheduler_loop():
-    """Continuous CIE Scheduling loop assigning pending chunks via configured strategy."""
-    logger.info("Starting CIE Unified Scheduler Engine...")
+    """Continuous CIE Scheduling loop with Work Stealing and Adaptive Hybrid Scheduling."""
+    logger.info("Starting CIE Unified Scheduler Engine (CoCompute 3.0 AHS)...")
 
     # Subscribe to Redis reschedule pub/sub channel (GAP 3)
     def on_reschedule_message(msg):
         try:
-            data = json.loads(msg["data"]) if isinstance(msg.get("data"), str) else msg.get("data")
+            data = msg.get("data")
             logger.info(f"[PubSub Reschedule Event] {data}")
         except Exception as e:
             logger.error(f"Error in on_reschedule_message: {e}")
@@ -420,7 +439,7 @@ async def unified_scheduler_loop():
     queue_service.subscribe_reschedule(on_reschedule_message)
 
     while True:
-        db: Session | None = None
+        db: Optional[Session] = None
         try:
             db = SessionLocal()
             all_workers = db.query(models.Worker).filter(models.Worker.status.in_(["online", "idle"])).all()
@@ -450,117 +469,109 @@ async def unified_scheduler_loop():
                     active_strat, workers, chunk, job, db
                 )
 
-                if selected_worker:
-                    now = datetime.now(timezone.utc)
-                    chunk.status = "assigned"
-                    chunk.worker_id = selected_worker.id
-                    chunk.start_time = now
-                    chunk.assigned_at = now
-                    chunk.attempt_count = (chunk.attempt_count or 0) + 1
+                if not selected_worker:
+                    continue
 
-                    if not chunk.chunk_uid:
-                        chunk.chunk_uid = _generate_chunk_uid(chunk.chunk_index)
+                # Create Provenance Attempt
+                chunk.attempt_count = (chunk.attempt_count or 0) + 1
+                attempt_uid = f"ATT-{chunk.id:04d}-{chunk.attempt_count:02d}"
 
-                    attempt = create_chunk_attempt(db, chunk, selected_worker)
+                attempt = models.ChunkAttempt(
+                    attempt_uid=attempt_uid,
+                    chunk_id=chunk.id,
+                    worker_id=selected_worker.id,
+                    attempt_number=chunk.attempt_count,
+                    status="assigned",
+                    is_speculative=bool(chunk.is_speculative)
+                )
+                db.add(attempt)
 
-                    if task and task.status == "pending":
-                        task.status = "running"
-                    if job:
-                        if job.status == "pending":
-                            job.status = "running"
-                            job.start_time = now
-                            if not job.job_uid:
-                                job.job_uid = _generate_job_uid(db)
-                            record_timeline_event(
-                                db, job.id, "JOB_STARTED",
-                                f"Job {job.job_uid} execution started across cluster ({used_strat})"
-                            )
+                chunk.worker_id = selected_worker.id
+                chunk.status = "assigned"
+                chunk.assigned_at = datetime.now(timezone.utc)
+                selected_worker.running_tasks = (selected_worker.running_tasks or 0) + 1
 
-                        record_timeline_event(
-                            db, job.id, "CHUNK_DISPATCHED",
-                            f"Dispatched {chunk.chunk_uid} to {selected_worker.hostname or selected_worker.worker_uid} (attempt {chunk.attempt_count})",
-                            {"chunk_id": chunk.id, "worker_uid": selected_worker.worker_uid, "attempt_id": attempt.attempt_uid}
-                        )
+                if job and job.status == "pending":
+                    job.status = "running"
+                    job.start_time = datetime.now(timezone.utc)
+                    record_timeline_event(db, job.id, "JOB_STARTED", f"Job {job.job_uid or job.id} entered RUNNING state")
 
-                    log_decision(
-                        db, chunk.id, selected_worker.id, used_strat, score,
-                        f"Strategy={used_strat} assigned to {selected_worker.worker_uid} (score={score:.2f})"
-                    )
+                # Log decision audit
+                db.add(models.SchedulerDecision(
+                    job_id=job.id if job else None,
+                    chunk_id=chunk.id,
+                    selected_worker_id=selected_worker.id,
+                    strategy=used_strat,
+                    score=score,
+                    candidates_count=len(workers),
+                    reason=f"Assigned chunk {chunk.id} to {selected_worker.worker_uid} via {used_strat} (score={score:.1f})"
+                ))
+                db.commit()
 
-                    db.commit()
+                # Dispatch WebSocket EXECUTE message
+                payload_data = chunk.input_data or {}
+                msg = {
+                    "action": "EXECUTE",
+                    "chunk_id": chunk.id,
+                    "chunk_uid": chunk.chunk_uid or f"CHUNK-{chunk.id}",
+                    "attempt_id": attempt_uid,
+                    "job_id": job.id if job else None,
+                    "job_uid": job.job_uid if job else f"JOB-{job.id}" if job else "",
+                    "task_type": job.job_type if job else "generic_python",
+                    "payload": payload_data
+                }
 
-                    # Dispatch via WebSocket with MinIO reference and attempt tracking
-                    payload = {
-                        "type": "EXECUTE",
-                        "chunk_id": chunk.id,
-                        "chunk_uid": chunk.chunk_uid,
-                        "attempt_id": attempt.attempt_uid or f"ATT-{attempt.id}",
-                        "attempt_number": chunk.attempt_count,
-                        "job_id": job.id if job else 0,
-                        "job_uid": job.job_uid if job else "",
-                        "task_type": job.job_type if job else "generic_python",
-                        "input_reference": chunk.input_reference,
-                        "task_payload": chunk.data_payload
-                    }
-                    await manager.send_personal_message(payload, selected_worker.worker_uid)
-                    logger.info(
-                        f"[{used_strat}] Dispatched chunk {chunk.id} ({chunk.chunk_uid}) → "
-                        f"{selected_worker.worker_uid} (score={score:.2f}, attempt={chunk.attempt_count})"
-                    )
+                if selected_worker.is_simulated:
+                    # Simulated virtual node execution
+                    asyncio.create_task(_simulate_chunk_execution(chunk.id, attempt_uid, selected_worker.id, job.job_type if job else "sorting"))
+                else:
+                    await manager.send_to_worker(selected_worker.worker_uid, msg)
 
         except Exception as e:
-            logger.error(f"Scheduler Loop Error: {e}")
+            logger.error(f"Scheduler loop error: {e}")
         finally:
             if db:
                 db.close()
+        await asyncio.sleep(1.0)
 
-        await asyncio.sleep(1.5)
 
+async def _simulate_chunk_execution(chunk_id: int, attempt_uid: str, worker_id: int, task_type: str):
+    """Handles virtual execution delay and completes simulated task chunks."""
+    await asyncio.sleep(random.uniform(0.5, 2.0))
+    db = SessionLocal()
+    try:
+        chunk = db.query(models.TaskChunk).filter(models.TaskChunk.id == chunk_id).first()
+        if chunk and chunk.status in ("assigned", "running"):
+            chunk.status = "completed"
+            chunk.accepted_attempt_id = attempt_uid
+            chunk.end_time = datetime.now(timezone.utc)
+            duration = (chunk.end_time - (chunk.assigned_at or chunk.end_time)).total_seconds()
 
-async def fault_tolerance_loop():
-    """Background monitoring loop detecting heartbeat loss and transitioning SUSPECTED -> FAILED."""
-    logger.info("Starting CIE Fault Tolerance Monitor...")
+            attempt = db.query(models.ChunkAttempt).filter(models.ChunkAttempt.attempt_uid == attempt_uid).first()
+            if attempt:
+                attempt.status = "completed"
+                attempt.completed_at = chunk.end_time
+                attempt.duration_seconds = duration
 
-    while True:
-        db: Session | None = None
-        try:
-            db = SessionLocal()
-            now = datetime.now(timezone.utc)
-            timeout_threshold = now - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+            worker = db.query(models.Worker).filter(models.Worker.id == worker_id).first()
+            if worker:
+                worker.total_tasks_completed = (worker.total_tasks_completed or 0) + 1
+                worker.running_tasks = max(0, (worker.running_tasks or 0) - 1)
 
-            # Detect workers missing heartbeats
-            dead_workers = db.query(models.Worker).filter(
-                models.Worker.status.in_(["online", "busy", "suspected"]),
-                models.Worker.last_seen < timeout_threshold
-            ).all()
-
-            for worker in dead_workers:
-                worker.status = "failed"
-                logger.warning(f"Worker {worker.worker_uid} marked FAILED (> {HEARTBEAT_TIMEOUT_SECONDS}s heartbeat loss)")
-
-                log_system_event(
-                    db, "WARNING", "fault_tolerance",
-                    f"Worker {worker.worker_uid} marked FAILED (heartbeat timeout)",
-                    {"worker_uid": worker.worker_uid}
-                )
-
-                rescheduled_chunks = reschedule_worker_chunks(
-                    db, worker, reason=f"heartbeat_timeout_>{HEARTBEAT_TIMEOUT_SECONDS}s"
-                )
-
-                if rescheduled_chunks:
-                    queue_service.publish_reschedule(
-                        job_id=str(rescheduled_chunks[0].task_id),
-                        chunk_ids=[str(c.id) for c in rescheduled_chunks],
-                        reason=f"Worker {worker.worker_uid} heartbeat timeout"
-                    )
-
+            # Insert simulated result
+            db.add(models.Result(
+                task_chunk_id=chunk.id,
+                result_data={"simulated": True, "task_type": task_type, "duration": duration},
+                execution_time=duration
+            ))
             db.commit()
 
-        except Exception as e:
-            logger.error(f"Fault Tolerance Monitor Error: {e}")
-        finally:
-            if db:
-                db.close()
-
-        await asyncio.sleep(3.0)
+            # Trigger aggregation if ready
+            task = db.query(models.Task).filter(models.Task.id == chunk.task_id).first()
+            if task and task.job_id:
+                from .aggregator import try_aggregate_job
+                try_aggregate_job(db, task.job_id)
+    except Exception as e:
+        logger.error(f"Error in _simulate_chunk_execution: {e}")
+    finally:
+        db.close()

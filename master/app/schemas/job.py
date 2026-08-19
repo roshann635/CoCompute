@@ -9,8 +9,10 @@ class JobCreate(BaseModel):
     job_type: str  # sorting, matrix_multiply, statistics, search, word_count, image_processing, prime_generation, cipher, ml_training, distributed_inference, llm_finetune, generic_python
     params: dict
     project_id: Optional[int] = None
-    scheduler_strategy: Optional[str] = "capacity_based"
+    scheduler_strategy: Optional[str] = "adaptive_hybrid"
     priority: Optional[str] = "NORMAL"
+    energy_mode: Optional[str] = "BALANCED"  # FAST, ECO, BALANCED
+    is_speculative_enabled: Optional[bool] = True
     requires_gpu: Optional[bool] = False
     min_vram_gb: Optional[float] = 0.0
 
@@ -23,8 +25,9 @@ class JobResponse(BaseModel):
     name: str
     description: Optional[str] = None
     job_type: str
-    scheduler_strategy: Optional[str] = "capacity_based"
+    scheduler_strategy: Optional[str] = "adaptive_hybrid"
     priority: Optional[str] = "NORMAL"
+    energy_mode: Optional[str] = "BALANCED"
     status: str
     total_tasks: int
     completed_tasks: int
@@ -32,6 +35,9 @@ class JobResponse(BaseModel):
     workers_used: int = 0
     requires_gpu: bool = False
     min_vram_gb: float = 0.0
+    credits_cost: float = 0.0
+    estimated_energy_kwh: float = 0.0
+    carbon_gco2_eq: float = 0.0
     submission_time: datetime
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
@@ -46,6 +52,7 @@ class JobResponse(BaseModel):
 class JobDetailResponse(JobResponse):
     params: Optional[dict] = None
     input_summary: Optional[dict] = None
+    workload_profile: Optional[dict] = None
     aggregated_result: Optional[Any] = None
     timeline: Optional[list[dict]] = []
 
@@ -57,12 +64,15 @@ class JobResultResponse(BaseModel):
     status: str
     aggregated_result: Optional[Any] = None
     input_summary: Optional[dict] = None
+    workload_profile: Optional[dict] = None
     result_preview: Optional[str] = None
     chunks_completed: int
     chunks_failed: int
     total_chunks: int
     workers_used: int = 0
     total_execution_time_seconds: Optional[float] = None
+    estimated_energy_kwh: float = 0.0
+    carbon_gco2_eq: float = 0.0
     checkpoint_location: Optional[str] = None
     model_location: Optional[str] = None
 
@@ -75,6 +85,7 @@ class ChunkProvenanceItem(BaseModel):
     worker_uid: Optional[str] = None
     attempt_count: int
     accepted_attempt_id: Optional[str] = None
+    is_speculative: bool = False
     attempts: list[dict] = []
 
 
