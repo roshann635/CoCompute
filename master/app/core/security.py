@@ -66,6 +66,23 @@ def require_admin(current_user: models.User = Depends(get_current_user)) -> mode
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
     return current_user
 
+
+# Alias for backward compatibility
+get_current_admin_user = require_admin
+
+
+def require_role(*allowed_roles: str):
+    """FastAPI dependency that enforces RBAC based on user role."""
+    def role_checker(current_user: models.User = Depends(get_current_user)) -> models.User:
+        if current_user.role not in allowed_roles and current_user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{current_user.role}' not authorized. Required: {allowed_roles}"
+            )
+        return current_user
+    return role_checker
+
+
 # --- Worker API Key Validation ---
 WORKER_API_KEY = os.getenv("WORKER_API_KEY", "cocompute-worker-key")
 

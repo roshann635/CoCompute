@@ -20,9 +20,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPExcept
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from .db.database import engine, Base, get_db
+import uuid
+from sqlalchemy import update, or_
+
+from .db.database import engine, Base, get_db, SessionLocal
 from .db import models
-from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks, marketplace, simulation, task_packages, result_explorer, pipelines
+from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks, marketplace, simulation, task_packages, result_explorer, pipelines, provenance
 from .network.ws_manager import manager
 from .network.discovery import start_discovery_server
 from .engine.scheduler import (
@@ -39,12 +42,19 @@ from .engine.metrics_engine import (
     cache_cluster_snapshot, record_metric_point,
     get_redis_client, update_worker_metrics
 )
+from .engine.failure_policy import classify_failure, should_retry
+from .engine.leadership import acquire_or_renew_lease, is_leader
+from .engine.recovery import recover_after_restart
 from .services.auth_service import verify_worker_token
 from .services.integrity import verify_checksum
 from .services.queue_service import queue_service
+from shared.sdk.registry import TaskRegistry
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+# Master Incarnation ID (Unique per process lifetime for split-brain & stale attempt detection)
+CURRENT_INCARNATION_ID = str(uuid.uuid4())[:12]
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -52,7 +62,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="CoCompute Master Node",
     description="Intelligent Distributed Computing Framework for Dynamic Resource-Aware Task Scheduling",
-    version="3.0.0"
+    version="3.1.0"
 )
 
 app.add_middleware(
@@ -67,6 +77,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(workers.router, prefix="/api/v1/workers", tags=["workers"])
 app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
+app.include_router(provenance.router, prefix="/api/v1", tags=["provenance"])
 app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
 app.include_router(marketplace.router)
 app.include_router(marketplace.credits_router)
@@ -99,8 +110,18 @@ async def _broadcast_to_dashboards(payload: dict):
 @app.on_event("startup")
 async def startup_event():
     logger.info("=" * 60)
-    logger.info("  CoCompute Master Node v2.0 Starting...")
+    logger.info(f"  CoCompute Master Node v3.1 Starting (Incarnation: {CURRENT_INCARNATION_ID})...")
     logger.info("=" * 60)
+
+    # Master Restart Recovery & Leadership Acquisition
+    db = SessionLocal()
+    try:
+        report = recover_after_restart(db, CURRENT_INCARNATION_ID)
+        logger.info(f"[StartupRecovery] Recovery report: {report}")
+    except Exception as e:
+        logger.error(f"[StartupRecovery] Failed to complete recovery: {e}")
+    finally:
+        db.close()
 
     # Initialize Redis Metrics Engine & Queues
     redis_client = get_redis_client()
@@ -128,7 +149,7 @@ async def startup_event():
     # Start dashboard broadcast loop
     asyncio.create_task(_dashboard_broadcast_loop())
 
-    logger.info("All CoCompute Master background services initialized (including CoCompute 3.0 Intelligence Engines).")
+    logger.info("All CoCompute Master background services initialized (including CoCompute 3.1 Hardened Invariants).")
 
 
 async def _dashboard_broadcast_loop():
@@ -251,10 +272,6 @@ def set_scheduler_config(body: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WORKER WEBSOCKET ENDPOINT (WITH TOKEN AUTH & DISCONNECT SUSPECTED)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.websocket("/ws/worker/{worker_uid}")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -270,11 +287,32 @@ async def websocket_endpoint(
     await manager.connect(websocket, worker_uid)
     db: Session = next(get_db())
 
+    worker_session_id = str(uuid.uuid4())[:12]
     db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
     if db_worker:
         db_worker.status = "online"
+        db_worker.session_id = worker_session_id
         db_worker.last_seen = datetime.now(timezone.utc)
+        
+        # Reconciliation: cancel stale attempts from prior master incarnations
+        stale_attempts = db.query(models.ChunkAttempt).filter(
+            models.ChunkAttempt.worker_id == db_worker.id,
+            models.ChunkAttempt.status.in_(["assigned", "running"]),
+            models.ChunkAttempt.master_incarnation_id != CURRENT_INCARNATION_ID
+        ).all()
+        for att in stale_attempts:
+            att.status = "cancelled_stale"
+            att.failure_reason = f"master_restarted_{CURRENT_INCARNATION_ID}"
         db.commit()
+
+        if stale_attempts:
+            try:
+                await websocket.send_json({
+                    "action": "CANCEL_STALE",
+                    "stale_attempt_uids": [a.attempt_uid for a in stale_attempts]
+                })
+            except Exception:
+                pass
 
     try:
         while True:
@@ -282,10 +320,20 @@ async def websocket_endpoint(
 
             if data.get("type") == "METRICS":
                 m = data.get("data", {})
+                seq = data.get("seq") or data.get("heartbeat_seq")
                 db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
                 if db_worker:
+                    # Invariant 10.5: Heartbeat Sequencing — Ignore stale / out-of-order heartbeats
+                    if seq is not None and db_worker.heartbeat_seq is not None and seq < db_worker.heartbeat_seq:
+                        logger.debug(f"[HeartbeatSeq] Stale heartbeat {seq} < {db_worker.heartbeat_seq} from {worker_uid} ignored.")
+                        continue
+
+                    if seq is not None:
+                        db_worker.heartbeat_seq = seq
+
                     db_worker.last_seen = datetime.now(timezone.utc)
-                    db_worker.status = "online"
+                    if db_worker.status in ("offline", "suspected"):
+                        db_worker.status = "online"
                     db_worker.cpu_utilization = m.get("cpu_usage", 0.0)
                     db_worker.ram_usage = m.get("ram_usage", 0.0)
                     db_worker.disk_usage = m.get("disk_usage", 0.0)
@@ -293,6 +341,10 @@ async def websocket_endpoint(
                     db_worker.gpu_utilization = m.get("gpu_utilization", 0.0)
                     db_worker.vram_usage = m.get("vram_usage", 0.0)
                     db_worker.gpu_temperature = m.get("gpu_temperature")
+                    if "capabilities" in data:
+                        db_worker.capabilities = data.get("capabilities")
+                    if "lifecycle_state" in data:
+                        db_worker.lifecycle_state = data.get("lifecycle_state")
 
                     update_worker_metrics(worker_uid, m)
 
@@ -321,79 +373,131 @@ async def websocket_endpoint(
                 if not db_chunk:
                     continue
 
-                # GAP 5: Duplicate Attempt Rejection
-                if db_chunk.accepted_attempt_id is not None and (attempt_id and db_chunk.accepted_attempt_id != attempt_id):
-                    logger.info(f"[DuplicateGuard] Late result from attempt {attempt_id} for chunk {chunk_id} discarded. Accepted: {db_chunk.accepted_attempt_id}")
-                    continue
-
-                if db_chunk.status == "completed":
-                    logger.info(f"[DuplicateGuard] Chunk {chunk_id} already COMPLETED — ignoring late result.")
-                    continue
-
-                # Stale worker protection
                 db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
-                if not db_worker or db_chunk.worker_id != db_worker.id:
-                    logger.warning(f"[DuplicateGuard] Ignored result for chunk {chunk_id} from unassigned worker {worker_uid}")
+                current_attempt = db.query(models.ChunkAttempt).filter(
+                    models.ChunkAttempt.chunk_id == chunk_id,
+                    models.ChunkAttempt.worker_id == (db_worker.id if db_worker else None)
+                ).order_by(models.ChunkAttempt.attempt_number.desc()).first()
+
+                # Stale master incarnation / session check
+                if current_attempt and current_attempt.master_incarnation_id and current_attempt.master_incarnation_id != CURRENT_INCARNATION_ID:
+                    logger.info(f"[StaleAttempt] Stale result from pre-restart attempt {current_attempt.attempt_uid} ignored.")
+                    current_attempt.status = "cancelled_stale"
+                    current_attempt.failure_reason = "pre_restart_attempt"
+                    db.commit()
                     continue
 
-                # GAP 6: Standalone SHA-256 Checksum Verification
+                # Duplicate / Late Attempt Pre-Check
+                if db_chunk.accepted_attempt_id is not None:
+                    logger.info(f"[DuplicateGuard] Chunk {chunk_id} already accepted ({db_chunk.accepted_attempt_id}) — ignoring late attempt {attempt_id}.")
+                    if current_attempt:
+                        current_attempt.status = "ignored_duplicate"
+                        current_attempt.failure_reason = "Late: chunk already accepted"
+                        db.commit()
+                    continue
+
+                # Checksum Verification
                 raw_result = result_data.get("result")
                 if checksum and not verify_checksum(raw_result, checksum):
                     logger.error(f"[Integrity] Checksum mismatch for chunk {chunk_id} from {worker_uid}. Rescheduling.")
+                    if current_attempt:
+                        current_attempt.status = "failed"
+                        current_attempt.failure_reason = "checksum_mismatch"
                     rescheduled = reschedule_worker_chunks(db, db_worker, reason="checksum_mismatch")
                     if rescheduled:
                         queue_service.publish_reschedule(str(db_chunk.task_id), [str(db_chunk.id)], "checksum_mismatch")
                     db.commit()
                     continue
 
-                now = datetime.now(timezone.utc)
+                # Step 3: Validate Partial FIRST (before CAS)
+                task = db.query(models.Task).filter(models.Task.id == db_chunk.task_id).first()
+                job = db.query(models.Job).filter(models.Job.id == task.job_id).first() if task else None
                 status_str = result_data.get("status", "success")
+
+                if status_str == "success" and job and raw_result is not None:
+                    task_impl = TaskRegistry.get(job.job_type)
+                    if task_impl:
+                        valid_p, err_p = task_impl.validate_partial(raw_result)
+                        if not valid_p:
+                            logger.error(f"[PartialValidation] Chunk {chunk_id} partial validation failed: {err_p}")
+                            if current_attempt:
+                                current_attempt.status = "validation_failed"
+                                current_attempt.failure_reason = err_p
+                            failure_cls = classify_failure(err_p)
+                            if failure_cls == "NON_RETRYABLE" or not should_retry(db_chunk, failure_cls):
+                                db_chunk.status = "failed"
+                            else:
+                                db_chunk.status = "pending"
+                                db_chunk.worker_id = None
+                                db_chunk.version = (db_chunk.version or 0) + 1
+                            db.commit()
+                            continue
+
+                now = datetime.now(timezone.utc)
                 exec_time = None
                 if db_chunk.start_time:
                     exec_time = (now - db_chunk.start_time).total_seconds()
 
-                db_chunk.end_time = now
-                db_chunk.checksum = checksum
+                effective_attempt_id = attempt_id or (current_attempt.attempt_uid if current_attempt else f"ATT-{chunk_id}-{db_chunk.attempt_count or 1}")
 
+                # Step 4: Atomic CAS Acceptance
                 if status_str == "success":
-                    db_chunk.status = "completed"
-                    # Mark accepted attempt (GAP 5)
-                    db_chunk.accepted_attempt_id = attempt_id or f"ATT-{chunk_id}-{db_chunk.attempt_count}"
+                    rows_updated = db.execute(
+                        update(models.TaskChunk)
+                        .where(
+                            models.TaskChunk.id == chunk_id,
+                            models.TaskChunk.accepted_attempt_id.is_(None)
+                        )
+                        .values(
+                            accepted_attempt_id=effective_attempt_id,
+                            status="completed",
+                            end_time=now,
+                            version=models.TaskChunk.version + 1
+                        )
+                    ).rowcount
+                    db.commit()
+
+                    if rows_updated == 0:
+                        # Another attempt won the CAS race
+                        if current_attempt:
+                            current_attempt.status = "ignored_duplicate"
+                            current_attempt.failure_reason = "Late: chunk already accepted"
+                            db.commit()
+                        logger.info(f"[ExactlyOnce] Attempt {effective_attempt_id} lost CAS for chunk {chunk_id}")
+                        continue
                 else:
                     db_chunk.status = "failed"
+                    db_chunk.version = (db_chunk.version or 0) + 1
+                    db.commit()
 
-                # Update ChunkAttempt
-                current_attempt = db.query(models.ChunkAttempt).filter(
-                    models.ChunkAttempt.chunk_id == chunk_id,
-                    models.ChunkAttempt.worker_id == db_worker.id
-                ).order_by(models.ChunkAttempt.attempt_number.desc()).first()
-
+                # Step 5: CAS Succeeded — Finalize attempt, store result, release resources
                 if current_attempt:
                     current_attempt.status = "completed" if status_str == "success" else "failed"
                     current_attempt.completed_at = now
                     current_attempt.duration_seconds = exec_time
-                    current_attempt.checksum = checksum
+                    current_attempt.checksum_sha256 = checksum
                     if status_str != "success":
                         current_attempt.failure_reason = result_data.get("error", "execution_error")
-                    else:
-                        summary = json.dumps(raw_result)[:500] if raw_result is not None else "success"
-                        current_attempt.result_summary = summary
 
                 # Save Result
                 existing_res = db.query(models.Result).filter(models.Result.task_chunk_id == chunk_id).first()
                 if existing_res:
                     existing_res.result_data = raw_result
-                    existing_res.checksum = checksum
-                    existing_res.execution_time_seconds = exec_time
+                    existing_res.checksum_sha256 = checksum
+                    existing_res.execution_time = exec_time
                 else:
                     db.add(models.Result(
                         task_chunk_id=chunk_id,
                         result_data=raw_result,
-                        checksum=checksum,
-                        execution_time_seconds=exec_time
+                        checksum_sha256=checksum,
+                        execution_time=exec_time
                     ))
 
+                # Update worker metrics & release reservations
                 if db_worker:
+                    db_worker.running_tasks = max(0, (db_worker.running_tasks or 1) - 1)
+                    db_worker.reserved_cpu_cores = max(0, db_worker.reserved_cpu_cores - 1)
+                    db_worker.reserved_ram_gb = max(0.0, db_worker.reserved_ram_gb - 1.0)
                     if status_str == "success":
                         db_worker.total_tasks_completed += 1
                     else:
@@ -404,7 +508,6 @@ async def websocket_endpoint(
                 db.commit()
 
                 # Trigger Aggregation check
-                task = db.query(models.Task).filter(models.Task.id == db_chunk.task_id).first()
                 if task:
                     try_aggregate_job(db, task.job_id)
 
@@ -418,6 +521,7 @@ async def websocket_endpoint(
                         job = db.query(models.Job).filter(models.Job.id == task.job_id).first() if task else None
 
                         pending_chunk.attempt_count = (pending_chunk.attempt_count or 0) + 1
+                        pending_chunk.normal_attempt_count = (pending_chunk.normal_attempt_count or 0) + 1
                         attempt_uid = f"ATT-{pending_chunk.id:04d}-{pending_chunk.attempt_count:02d}"
 
                         attempt = models.ChunkAttempt(
@@ -425,17 +529,22 @@ async def websocket_endpoint(
                             chunk_id=pending_chunk.id,
                             worker_id=db_worker.id,
                             attempt_number=pending_chunk.attempt_count,
-                            status="assigned"
+                            status="assigned",
+                            master_incarnation_id=CURRENT_INCARNATION_ID,
+                            worker_session_id=db_worker.session_id
                         )
                         db.add(attempt)
                         pending_chunk.worker_id = db_worker.id
                         pending_chunk.status = "assigned"
+                        pending_chunk.version = (pending_chunk.version or 0) + 1
                         pending_chunk.assigned_at = datetime.now(timezone.utc)
                         db_worker.running_tasks = (db_worker.running_tasks or 0) + 1
                         db.commit()
 
                         await websocket.send_json({
                             "action": "EXECUTE",
+                            "protocol_version": "1.0",
+                            "master_incarnation_id": CURRENT_INCARNATION_ID,
                             "chunk_id": pending_chunk.id,
                             "chunk_uid": pending_chunk.chunk_uid or f"CHUNK-{pending_chunk.id}",
                             "attempt_id": attempt_uid,

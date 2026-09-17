@@ -72,41 +72,93 @@ def check_and_spawn_speculative_attempts(db: Session) -> List[Dict[str, Any]]:
                 assigned_time = assigned_time.replace(tzinfo=timezone.utc)
             elapsed = (now - assigned_time).total_seconds()
             if elapsed > threshold_duration:
-                # Check if a speculative attempt already exists
-                existing_speculative = db.query(models.ChunkAttempt).filter(
-                    models.ChunkAttempt.chunk_id == chunk.id,
-                    models.ChunkAttempt.is_speculative == True,
-                    models.ChunkAttempt.status.in_(["assigned", "running"])
-                ).first()
-
-                if existing_speculative:
-                    continue  # Already has an active speculative copy
+                # Check speculative retry budget (Invariant 5)
+                if (chunk.speculative_attempt_count or 0) >= (chunk.max_speculative or 2):
+                    logger.info(f"[Speculative] Chunk {chunk.id} has reached max speculative attempts ({chunk.max_speculative}).")
+                    continue
 
                 # Identify the slow worker
                 slow_worker = db.query(models.Worker).filter(models.Worker.id == chunk.worker_id).first()
                 slow_uid = slow_worker.worker_uid if slow_worker else "unknown"
 
+                # Find a fast alternate worker
+                fast_worker = db.query(models.Worker).filter(
+                    models.Worker.status.in_(["online", "idle"]),
+                    models.Worker.id != chunk.worker_id,
+                    models.Worker.lifecycle_state != "draining",
+                    models.Worker.trust_status != "rejected"
+                ).order_by(models.Worker.reliability_score.desc(), models.Worker.running_tasks.asc()).first()
+
+                if not fast_worker:
+                    logger.debug(f"[Speculative] No alternate worker available for speculative execution of chunk {chunk.id}")
+                    continue
+
+                # ── Invariant 5: Independent Retry Budget ──────────────────
+                chunk.speculative_attempt_count = (chunk.speculative_attempt_count or 0) + 1
+                chunk.is_speculative = True
+                spec_num = chunk.speculative_attempt_count
+                attempt_uid = f"ATT-{chunk.id:04d}-S{spec_num:02d}"
+
+                try:
+                    from ..main import CURRENT_INCARNATION_ID
+                except Exception:
+                    CURRENT_INCARNATION_ID = "master-current"
+                from ..network.ws_manager import manager
+
+                attempt = models.ChunkAttempt(
+                    attempt_uid=attempt_uid,
+                    chunk_id=chunk.id,
+                    worker_id=fast_worker.id,
+                    attempt_number=(chunk.attempt_count or 0) + spec_num,
+                    status="assigned",
+                    is_speculative=True,
+                    master_incarnation_id=CURRENT_INCARNATION_ID,
+                    worker_session_id=fast_worker.session_id,
+                    assigned_at=now
+                )
+                db.add(attempt)
+                fast_worker.running_tasks = (fast_worker.running_tasks or 0) + 1
+
                 logger.warning(
                     f"[Straggler Detected] Job {job.job_uid or job.id} Chunk {chunk.chunk_uid or chunk.id} "
-                    f"on {slow_uid} has run for {elapsed:.1f}s (threshold: {threshold_duration:.1f}s). Spawning speculative attempt!"
+                    f"on {slow_uid} has run for {elapsed:.1f}s (threshold: {threshold_duration:.1f}s). "
+                    f"Dispatched speculative attempt {attempt_uid} to {fast_worker.worker_uid}!"
                 )
-
-                # Reset chunk to pending or spawn duplicate attempt for CIE dispatch
-                # In CoCompute, we flag the chunk as having speculative execution active
-                chunk.is_speculative = True
 
                 from .scheduler import record_timeline_event
                 record_timeline_event(
                     db, job.id, "SPECULATIVE_EXECUTION_TRIGGERED",
-                    f"Speculative execution copy triggered for straggling Chunk {chunk.chunk_uid or chunk.id} (Slow Worker: {slow_uid}, Elapsed: {elapsed:.1f}s)",
-                    {"chunk_id": chunk.id, "slow_worker": slow_uid, "elapsed_sec": elapsed, "threshold_sec": threshold_duration}
+                    f"Speculative attempt {attempt_uid} dispatched to {fast_worker.worker_uid} (Slow Worker: {slow_uid}, Elapsed: {elapsed:.1f}s)",
+                    {"chunk_id": chunk.id, "slow_worker": slow_uid, "fast_worker": fast_worker.worker_uid, "speculative_attempt": attempt_uid}
                 )
+
+                # Dispatch over WebSocket
+                msg = {
+                    "action": "EXECUTE",
+                    "protocol_version": "1.0",
+                    "master_incarnation_id": CURRENT_INCARNATION_ID,
+                    "chunk_id": chunk.id,
+                    "chunk_uid": chunk.chunk_uid or f"CHUNK-{chunk.id}",
+                    "attempt_id": attempt_uid,
+                    "job_id": job.id,
+                    "job_uid": job.job_uid or f"JOB-{job.id}",
+                    "task_type": job.job_type or "generic_python",
+                    "payload": chunk.input_data or {},
+                    "is_speculative": True
+                }
+
+                try:
+                    asyncio.create_task(manager.send_to_worker(fast_worker.worker_uid, msg))
+                except Exception as e:
+                    logger.error(f"[Speculative] Failed to dispatch speculative attempt: {e}")
 
                 spawned.append({
                     "job_id": job.id,
                     "chunk_id": chunk.id,
                     "chunk_uid": chunk.chunk_uid,
                     "slow_worker_uid": slow_uid,
+                    "fast_worker_uid": fast_worker.worker_uid,
+                    "attempt_uid": attempt_uid,
                     "elapsed_sec": round(elapsed, 2),
                     "threshold_sec": round(threshold_duration, 2)
                 })

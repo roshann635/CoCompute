@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, JSON, Text, Enum as SAEnum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, JSON, Text, Enum as SAEnum, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -84,6 +84,9 @@ class Project(Base):
 
 class Worker(Base):
     __tablename__ = "workers"
+    __table_args__ = (
+        Index("ix_workers_status_last_seen", "status", "last_seen"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     worker_uid = Column(String(100), unique=True, index=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -137,6 +140,15 @@ class Worker(Base):
     gpu_temperature = Column(Float, nullable=True)
     cuda_available = Column(Boolean, default=False)
     cuda_capability = Column(String(20), default="8.6")
+
+    # CoCompute Hardening: Reservations & Capabilities & Session & Heartbeat
+    session_id = Column(String(50), nullable=True)
+    heartbeat_seq = Column(Integer, default=0)
+    reserved_cpu_cores = Column(Integer, default=0)
+    reserved_ram_gb = Column(Float, default=0.0)
+    reserved_gpu_count = Column(Integer, default=0)
+    reserved_gpu_vram_gb = Column(Float, default=0.0)
+    capabilities = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -214,6 +226,7 @@ class Job(Base):
     credit_transactions = relationship("CreditTransaction", back_populates="job")
     task_package = relationship("TaskPackage", back_populates="jobs")
     pipeline = relationship("TaskPipeline", back_populates="jobs")
+    artifacts = relationship("ResultArtifact", back_populates="job", cascade="all, delete-orphan")
 
 
 class Task(Base):
@@ -232,14 +245,22 @@ class Task(Base):
 
 class TaskChunk(Base):
     __tablename__ = "task_chunks"
+    __table_args__ = (
+        Index("ix_task_chunks_task_id_status", "task_id", "status"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     chunk_uid = Column(String(50), unique=True, index=True, nullable=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
     worker_id = Column(Integer, ForeignKey("workers.id"), nullable=True)
     chunk_index = Column(Integer)
     status = Column(String(20), default="pending")  # pending, assigned, running, completed, failed, timeout
+    version = Column(Integer, default=0)  # Optimistic concurrency locking
     attempt_count = Column(Integer, default=0)
-    accepted_attempt_id = Column(String(50), nullable=True)  # GAP 5: Duplicate attempt rejection guard
+    normal_attempt_count = Column(Integer, default=0)
+    speculative_attempt_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    max_speculative = Column(Integer, default=2)
+    accepted_attempt_id = Column(String(50), nullable=True)  # GAP 5 & Invariant 1: Duplicate attempt rejection guard
     
     # CoCompute 3.0 Speculative Execution (Straggler Mitigation)
     is_speculative = Column(Boolean, default=False)
@@ -265,13 +286,18 @@ class TaskChunk(Base):
 
 class ChunkAttempt(Base):
     __tablename__ = "chunk_attempts"
+    __table_args__ = (
+        Index("ix_chunk_attempts_chunk_id_status", "chunk_id", "status"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     attempt_uid = Column(String(50), unique=True, index=True, nullable=False)
     chunk_id = Column(Integer, ForeignKey("task_chunks.id"), nullable=False)
     worker_id = Column(Integer, ForeignKey("workers.id"), nullable=True)
     attempt_number = Column(Integer, default=1)
-    status = Column(String(20), default="assigned")  # assigned, running, completed, failed, timeout
+    status = Column(String(20), default="assigned")  # assigned, running, completed, failed, timeout, ignored_duplicate, validation_failed, cancelled_stale
     is_speculative = Column(Boolean, default=False)
+    master_incarnation_id = Column(String(50), nullable=True)
+    worker_session_id = Column(String(50), nullable=True)
 
     assigned_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -286,6 +312,48 @@ class ChunkAttempt(Base):
     # Relationships
     chunk = relationship("TaskChunk", back_populates="attempts")
     worker = relationship("Worker", back_populates="attempts")
+
+
+class ResultArtifact(Base):
+    __tablename__ = "result_artifacts"
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
+    storage_location = Column(String(500), nullable=False)
+    size_bytes = Column(Integer, default=0)
+    checksum_sha256 = Column(String(64), nullable=False)
+    lifecycle_state = Column(String(20), default="active")  # active, archived, deleted
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    job = relationship("Job", back_populates="artifacts")
+
+
+class MasterLease(Base):
+    __tablename__ = "master_lease"
+    id = Column(Integer, primary_key=True, default=1)
+    incarnation_id = Column(String(50), nullable=False)
+    hostname = Column(String(255), nullable=True)
+    lease_acquired_at = Column(DateTime(timezone=True), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_actor_timestamp", "actor", "timestamp"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    actor = Column(String(100), nullable=False)
+    role = Column(String(20), nullable=True)
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(String(50), nullable=True)
+    outcome = Column(String(20), default="success")
+    details = Column(JSON, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    session_id = Column(String(50), nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Result(Base):

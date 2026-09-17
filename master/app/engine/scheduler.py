@@ -99,10 +99,12 @@ def filter_available_workers(
     workers: List[models.Worker],
     db: Session,
     requires_gpu: bool = False,
-    min_vram_gb: float = 0.0
+    min_vram_gb: float = 0.0,
+    required_capabilities: Optional[Dict[str, Any]] = None
 ) -> Tuple[List[models.Worker], List[models.Worker]]:
     """
-    Filters out offline, overloaded, untrusted, draining, or GPU-incompatible workers.
+    Filters out offline, overloaded, untrusted, draining/failed/recovering, GPU-incompatible,
+    or capability-mismatched workers.
     """
     available = []
     skipped = []
@@ -117,9 +119,9 @@ def filter_available_workers(
             skipped.append(w)
             continue
 
-        # Self-Healing Lifecycle Gate
+        # Self-Healing Lifecycle Gate: exclude draining, failed, recovering
         lifecycle = getattr(w, "lifecycle_state", "healthy") or "healthy"
-        if lifecycle == "draining":
+        if lifecycle in ("draining", "failed", "recovering"):
             skipped.append(w)
             continue
 
@@ -138,6 +140,21 @@ def filter_available_workers(
                 skipped.append(w)
                 continue
             if gpu_util > HIGH_GPU_THRESHOLD:
+                skipped.append(w)
+                continue
+
+        # Invariant 10.6: Capability Matching Gate
+        if required_capabilities and isinstance(required_capabilities, dict):
+            worker_caps = getattr(w, "capabilities", {}) or {}
+            mismatch = False
+            for req_key, req_val in required_capabilities.items():
+                if req_key not in worker_caps:
+                    mismatch = True
+                    break
+                if req_val is not None and worker_caps[req_key] != req_val:
+                    mismatch = True
+                    break
+            if mismatch:
                 skipped.append(w)
                 continue
 
@@ -176,6 +193,10 @@ def select_capacity_based(workers: List[models.Worker], chunk: models.TaskChunk,
     best_worker = None
     best_score = -999.0
 
+    chunk_input = chunk.input_data if chunk and chunk.input_data else {}
+    locality_worker_id = chunk_input.get("preferred_worker_id") or chunk_input.get("data_locality_worker_id")
+    locality_worker_uid = chunk_input.get("preferred_worker_uid") or chunk_input.get("data_locality_worker_uid")
+
     for w in workers:
         reliability = getattr(w, "reliability_score", 1.0) or 1.0
         cpu_cores = getattr(w, "cpu_cores", 4) or 4
@@ -200,6 +221,12 @@ def select_capacity_based(workers: List[models.Worker], chunk: models.TaskChunk,
         else:
             capacity = (cpu_cores * 10.0) + (ram_total * 2.0)
             score = (capacity * reliability) / (active_tasks + 1) - (cpu_util * 0.5) - (ram_usage * 0.3)
+
+        # Invariant 10.1: Data Locality Bonus (+30.0 for matching worker locality)
+        if locality_worker_id and w.id == locality_worker_id:
+            score += 30.0
+        elif locality_worker_uid and w.worker_uid == locality_worker_uid:
+            score += 30.0
 
         if score > best_score:
             best_score = score
@@ -424,9 +451,37 @@ def reschedule_worker_chunks(db: Session, worker: models.Worker, reason: str = "
     return rescheduled
 
 
+async def fault_tolerance_loop():
+    """Background watchdog periodically checking for suspected/timed out workers and rescheduling chunks."""
+    logger.info("Starting Fault Tolerance Watchdog...")
+    while True:
+        db = None
+        try:
+            db = SessionLocal()
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+            stale_workers = db.query(models.Worker).filter(
+                models.Worker.status.in_(["online", "busy"]),
+                models.Worker.last_seen < cutoff
+            ).all()
+            for w in stale_workers:
+                w.status = "suspected"
+                rescheduled = reschedule_worker_chunks(db, w, reason="heartbeat_timeout")
+                if rescheduled:
+                    db.commit()
+        except Exception as e:
+            logger.error(f"Fault tolerance loop error: {e}")
+        finally:
+            if db:
+                db.close()
+        await asyncio.sleep(5.0)
+
+
+from sqlalchemy import update
+
+
 async def unified_scheduler_loop():
     """Continuous CIE Scheduling loop with Work Stealing and Adaptive Hybrid Scheduling."""
-    logger.info("Starting CIE Unified Scheduler Engine (CoCompute 3.0 AHS)...")
+    logger.info("Starting CIE Unified Scheduler Engine (CoCompute 3.1 AHS)...")
 
     # Subscribe to Redis reschedule pub/sub channel (GAP 3)
     def on_reschedule_message(msg):
@@ -442,6 +497,20 @@ async def unified_scheduler_loop():
         db: Optional[Session] = None
         try:
             db = SessionLocal()
+            
+            # Master Leadership Check
+            try:
+                from ..main import CURRENT_INCARNATION_ID
+                from .leadership import is_leader, acquire_or_renew_lease
+                # Maintain or acquire lease
+                acquire_or_renew_lease(db, CURRENT_INCARNATION_ID)
+                if not is_leader(db, CURRENT_INCARNATION_ID):
+                    logger.debug(f"[Scheduler] Node is not the active leader (Incarnation {CURRENT_INCARNATION_ID}). Standby...")
+                    await asyncio.sleep(2.0)
+                    continue
+            except Exception as e:
+                logger.debug(f"[Scheduler] Leadership check bypass: {e}")
+
             all_workers = db.query(models.Worker).filter(models.Worker.status.in_(["online", "idle"])).all()
             if not all_workers:
                 await asyncio.sleep(1.5)
@@ -472,28 +541,62 @@ async def unified_scheduler_loop():
                 if not selected_worker:
                     continue
 
-                # Create Provenance Attempt
-                chunk.attempt_count = (chunk.attempt_count or 0) + 1
-                attempt_uid = f"ATT-{chunk.id:04d}-{chunk.attempt_count:02d}"
+                # ── Invariant 5.1: Optimistic Concurrency Locking ───────────
+                current_ver = chunk.version or 0
+                now = datetime.now(timezone.utc)
+                attempt_num = (chunk.attempt_count or 0) + 1
+                attempt_uid = f"ATT-{chunk.id:04d}-{attempt_num:02d}"
 
+                rows_updated = db.execute(
+                    update(models.TaskChunk)
+                    .where(
+                        models.TaskChunk.id == chunk.id,
+                        models.TaskChunk.status == "pending",
+                        models.TaskChunk.version == current_ver
+                    )
+                    .values(
+                        status="assigned",
+                        worker_id=selected_worker.id,
+                        version=current_ver + 1,
+                        attempt_count=attempt_num,
+                        normal_attempt_count=(chunk.normal_attempt_count or 0) + 1,
+                        assigned_at=now
+                    )
+                ).rowcount
+                db.commit()
+
+                if rows_updated == 0:
+                    # Lost race to another scheduler loop
+                    logger.debug(f"[OptimisticLock] Scheduler lost race for chunk {chunk.id}")
+                    continue
+
+                # ── Invariant 5.2: Resource Reservations ────────────────────
+                task_cpu = 1
+                task_ram = 1.0
+                task_vram = float(job.min_vram_gb or 0.0) if job and job.requires_gpu else 0.0
+
+                selected_worker.reserved_cpu_cores = (selected_worker.reserved_cpu_cores or 0) + task_cpu
+                selected_worker.reserved_ram_gb = (selected_worker.reserved_ram_gb or 0.0) + task_ram
+                selected_worker.reserved_gpu_vram_gb = (selected_worker.reserved_gpu_vram_gb or 0.0) + task_vram
+                selected_worker.running_tasks = (selected_worker.running_tasks or 0) + 1
+
+                # Create Provenance Attempt
+                from ..main import CURRENT_INCARNATION_ID
                 attempt = models.ChunkAttempt(
                     attempt_uid=attempt_uid,
                     chunk_id=chunk.id,
                     worker_id=selected_worker.id,
-                    attempt_number=chunk.attempt_count,
+                    attempt_number=attempt_num,
                     status="assigned",
-                    is_speculative=bool(chunk.is_speculative)
+                    is_speculative=bool(chunk.is_speculative),
+                    master_incarnation_id=CURRENT_INCARNATION_ID,
+                    worker_session_id=selected_worker.session_id
                 )
                 db.add(attempt)
 
-                chunk.worker_id = selected_worker.id
-                chunk.status = "assigned"
-                chunk.assigned_at = datetime.now(timezone.utc)
-                selected_worker.running_tasks = (selected_worker.running_tasks or 0) + 1
-
                 if job and job.status == "pending":
                     job.status = "running"
-                    job.start_time = datetime.now(timezone.utc)
+                    job.start_time = now
                     record_timeline_event(db, job.id, "JOB_STARTED", f"Job {job.job_uid or job.id} entered RUNNING state")
 
                 # Log decision audit
@@ -512,6 +615,8 @@ async def unified_scheduler_loop():
                 payload_data = chunk.input_data or {}
                 msg = {
                     "action": "EXECUTE",
+                    "protocol_version": "1.0",
+                    "master_incarnation_id": CURRENT_INCARNATION_ID,
                     "chunk_id": chunk.id,
                     "chunk_uid": chunk.chunk_uid or f"CHUNK-{chunk.id}",
                     "attempt_id": attempt_uid,
@@ -521,11 +626,23 @@ async def unified_scheduler_loop():
                     "payload": payload_data
                 }
 
-                if selected_worker.is_simulated:
-                    # Simulated virtual node execution
-                    asyncio.create_task(_simulate_chunk_execution(chunk.id, attempt_uid, selected_worker.id, job.job_type if job else "sorting"))
-                else:
-                    await manager.send_to_worker(selected_worker.worker_uid, msg)
+                try:
+                    if selected_worker.is_simulated:
+                        asyncio.create_task(_simulate_chunk_execution(chunk.id, attempt_uid, selected_worker.id, job.job_type if job else "sorting"))
+                    else:
+                        await manager.send_to_worker(selected_worker.worker_uid, msg)
+                except Exception as dispatch_err:
+                    # ── Invariant 5.2: Rollback Reservations on Dispatch Failure ──
+                    logger.error(f"[DispatchFailure] Failed to dispatch to {selected_worker.worker_uid}, rolling back: {dispatch_err}")
+                    selected_worker.reserved_cpu_cores = max(0, selected_worker.reserved_cpu_cores - task_cpu)
+                    selected_worker.reserved_ram_gb = max(0.0, selected_worker.reserved_ram_gb - task_ram)
+                    selected_worker.reserved_gpu_vram_gb = max(0.0, selected_worker.reserved_gpu_vram_gb - task_vram)
+                    selected_worker.running_tasks = max(0, (selected_worker.running_tasks or 1) - 1)
+                    
+                    chunk.status = "pending"
+                    chunk.worker_id = None
+                    chunk.version = (chunk.version or 0) + 1
+                    db.commit()
 
         except Exception as e:
             logger.error(f"Scheduler loop error: {e}")

@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from ..db import database, models
+from ..db.database import get_db
 from ..schemas import job as schemas
 from ..engine.jobs import generate_job_chunks
 from ..engine.aggregator import _generate_input_summary
@@ -20,6 +21,17 @@ def submit_job(
     current_user: models.User = Depends(get_current_user)
 ):
     """Submit a new job for distributed execution with institutional quota verification."""
+    # Invariant 10.2: Cluster Backpressure Check
+    import os
+    max_cluster_pending = int(os.getenv("MAX_CLUSTER_PENDING_CHUNKS", "5000"))
+    total_pending_chunks = db.query(models.TaskChunk).filter(models.TaskChunk.status == "pending").count()
+    if total_pending_chunks >= max_cluster_pending:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Cluster backpressure active: {total_pending_chunks} pending chunks queued (max threshold: {max_cluster_pending}). Please retry shortly."
+        )
+
+    # Invariant 10.3: Institutional Multi-User Quota Checks
     # 1. Enforce Concurrent Job Quota
     active_jobs = db.query(models.Job).filter(
         models.Job.user_id == current_user.id,
@@ -33,12 +45,18 @@ def submit_job(
             detail=f"Resource quota exceeded: You have {active_jobs} active jobs (max allowed: {max_concurrent})."
         )
 
-    # 2. Enforce GPU Quota
-    if job_in.requires_gpu and (current_user.max_gpu_count or 0) <= 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Your user role/quota does not have permission to submit GPU-accelerated jobs."
-        )
+    # 2. Enforce GPU Quota & VRAM Quota
+    if job_in.requires_gpu:
+        if (current_user.max_gpu_count or 0) <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Your user role/quota does not have permission to submit GPU-accelerated jobs."
+            )
+        if job_in.min_vram_gb and current_user.max_vram_gb and job_in.min_vram_gb > current_user.max_vram_gb:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Requested VRAM ({job_in.min_vram_gb} GB) exceeds your quota limit ({current_user.max_vram_gb} GB)."
+            )
 
     # 3. Validate job type (All 11 standard tasks + custom)
     valid_types = [
@@ -442,4 +460,79 @@ def get_job_executive_report(job_id: int, db: Session = Depends(get_db)):
     }
     report_md = generate_executive_job_report(job_data)
     return {"job_uid": job.job_uid, "report_markdown": report_md}
+
+
+@router.post("/{job_id}/cancel")
+async def cancel_job(
+    job_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Cancels an active or pending job, releases assigned worker reservations,
+    marks uncompleted chunks as cancelled, and records audit event.
+    """
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status in ("completed", "cancelled"):
+        return {"job_id": job.id, "status": job.status, "message": f"Job is already {job.status}"}
+
+    job.status = "cancelled"
+    job.end_time = datetime.now(timezone.utc)
+
+    # Cancel all non-completed tasks & chunks
+    for task in job.tasks:
+        if task.status != "completed":
+            task.status = "cancelled"
+        for chunk in task.chunks:
+            if chunk.status not in ("completed", "cancelled"):
+                chunk.status = "cancelled"
+                # Release worker reservations if assigned
+                if chunk.worker:
+                    chunk.worker.running_tasks = max(0, (chunk.worker.running_tasks or 1) - 1)
+                    chunk.worker.reserved_cpu_cores = max(0, chunk.worker.reserved_cpu_cores - 1)
+                    chunk.worker.reserved_ram_gb = max(0.0, chunk.worker.reserved_ram_gb - 1.0)
+                    
+                    # Notify worker to cancel execution if connected
+                    try:
+                        from ..network.ws_manager import manager
+                        await manager.send_to_worker(chunk.worker.worker_uid, {
+                            "action": "CANCEL",
+                            "chunk_id": chunk.id,
+                            "chunk_uid": chunk.chunk_uid,
+                            "job_id": job.id
+                        })
+                    except Exception:
+                        pass
+
+            for attempt in chunk.attempts:
+                if attempt.status in ("assigned", "running"):
+                    attempt.status = "cancelled"
+                    attempt.completed_at = datetime.now(timezone.utc)
+                    attempt.failure_reason = "Job cancelled by user"
+
+    from ..engine.scheduler import record_timeline_event
+    record_timeline_event(
+        db, job.id, "JOB_CANCELLED",
+        f"Job {job.job_uid or job.id} was cancelled by user {current_user.username}",
+        {"user": current_user.username}
+    )
+
+    from ..services.audit import log_audit_event
+    log_audit_event(
+        db=db,
+        actor=current_user.username,
+        role=current_user.role,
+        action="JOB_CANCEL",
+        resource_type="job",
+        resource_id=str(job.id),
+        outcome="success",
+        details={"job_uid": job.job_uid}
+    )
+
+    db.commit()
+    return {"job_id": job.id, "job_uid": job.job_uid, "status": "cancelled", "message": "Job successfully cancelled"}
+
 

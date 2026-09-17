@@ -15,12 +15,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func as sa_func
 
 from ..db import models
-from ..storage.file_store import save_result_file
+from ..storage.file_store import save_result_file, compute_file_checksum
 from ..services.minio_service import minio_service
 from .energy_engine import estimate_job_energy
 from .reliability_engine import compute_worker_reliability
 from .ai_scheduler import record_closed_loop_feedback
 from shared.sdk.registry import TaskRegistry
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +290,7 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
     if not job.input_summary and job.params:
         job.input_summary = _generate_input_summary(job.job_type, job.params)
 
-    # Route aggregation
+    # Route aggregation through task-specific helpers
     if job.job_type == "prime_generation":
         aggregated = aggregate_prime_results(results)
     elif job.job_type == "matrix_multiply":
@@ -306,16 +307,37 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
         task = TaskRegistry.get(job.job_type)
         if task:
             aggregated = task.aggregate(results)
-            valid, err = task.validate_final(aggregated, job.params)
-            if not valid:
-                logger.error(f"Final validation failed for job {job_id}: {err}")
-                aggregated["validation_error"] = err
         else:
             collected = []
             for r in results:
                 collected.append({"chunk_index": r.get("chunk_index", -1), "result": r.get("result_data")})
             collected.sort(key=lambda x: x["chunk_index"])
             aggregated = {"results": collected}
+
+    # ── CORRECTNESS > STATUS: Run validate_final() for ALL tasks ──────────
+    # System Invariant: A job MUST NOT become COMPLETED unless validate_final() passes.
+    task_impl = TaskRegistry.get(job.job_type)
+    if task_impl:
+        try:
+            valid, err = task_impl.validate_final(aggregated, job.params)
+            if not valid:
+                logger.error(f"[CORRECTNESS] validate_final() FAILED for job {job_id} ({job.job_type}): {err}")
+                from .scheduler import record_timeline_event
+                record_timeline_event(
+                    db, job_id, "VALIDATION_FAILED",
+                    f"End-to-end validation failed: {err}",
+                    {"error": err, "job_type": job.job_type}
+                )
+                job.status = "validation_failed"
+                job.end_time = datetime.now(timezone.utc)
+                job.result_preview = f"❌ Validation failed: {err}"
+                db.commit()
+                return False
+            else:
+                logger.info(f"[CORRECTNESS] validate_final() PASSED for job {job_id} ({job.job_type})")
+        except Exception as e:
+            logger.error(f"validate_final() exception for job {job_id}: {e}")
+            aggregated["validation_warning"] = str(e)
 
     # Record Checkpoint for ML / LLM jobs
     if job.job_type in ("ml_training", "llm_finetune") and completed_chunks:
@@ -413,7 +435,7 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
     db.commit()
 
     try:
-        save_result_file(
+        file_path = save_result_file(
             job_id=job_id,
             job_name=job.name or f"job_{job_id}",
             job_type=job.job_type or "unknown",
@@ -436,6 +458,21 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
                 "end_time": job.end_time.isoformat() if job.end_time else None,
             },
         )
+        
+        # Invariant 2: Create DB ResultArtifact record for complete provenance & persistence
+        if file_path and os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+            checksum = compute_file_checksum(file_path)
+            artifact_record = models.ResultArtifact(
+                job_id=job.id,
+                storage_location=file_path,
+                size_bytes=file_size,
+                checksum_sha256=checksum,
+                lifecycle_state="active"
+            )
+            db.add(artifact_record)
+            db.commit()
+
         bundle_uri = minio_service.upload_artifact_bundle(str(job.job_uid or job.id), {
             "job_id": job.id,
             "job_uid": job.job_uid,

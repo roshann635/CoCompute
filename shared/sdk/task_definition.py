@@ -1,14 +1,17 @@
 """
-CoCompute Task SDK — Core Contract Definitions.
+CoCompute Task SDK — Canonical 7-Hook Task Contract.
 
-Every distributed task in CoCompute implements the 7-method TaskDefinition contract:
-  1. resource_requirements(self) -> dict
-  2. validate_input(self, input_data) -> (is_valid: bool, error_msg: str)
-  3. partition(self, input_data, chunks) -> list of chunk payloads
-  4. execute(self, payload) -> chunk result dictionary
-  5. validate_partial(self, chunk_result) -> (is_valid: bool, error_msg: str)
-  6. aggregate(self, results) -> global aggregated result
-  7. validate_final(self, final_result, input_data) -> (is_valid: bool, error_msg: str)
+Every distributed task in CoCompute implements this contract:
+  1. validate_input(input_data) -> (bool, str)       — reject malformed input early
+  2. estimate_resources(input_data) -> ResourceEstimate — declare CPU/RAM/GPU/VRAM needs
+  3. partition(input_data, chunks) -> List[dict]       — decompose into parallel chunks
+  4. execute(payload) -> dict                          — run one chunk (on worker)
+  5. validate_partial(chunk_result) -> (bool, str)     — validate before acceptance
+  6. aggregate(results) -> dict                        — combine all accepted results
+  7. validate_final(final_result, input_data) -> (bool, str) — end-to-end correctness
+
+System Invariant: CORRECTNESS > STATUS
+A job cannot be COMPLETED unless validate_final() passes.
 """
 
 from abc import ABC, abstractmethod
@@ -30,7 +33,7 @@ class TaskDefinition(ABC):
 
     def resource_requirements(self) -> Dict[str, Any]:
         """
-        1. Declare minimum CPU cores, RAM GB, GPU count, VRAM GB, and estimated time.
+        Declare minimum CPU cores, RAM GB, GPU count, VRAM GB, and estimated time.
         CIE uses this to filter and score workers.
         """
         return {
@@ -39,6 +42,23 @@ class TaskDefinition(ABC):
             "requires_gpu": self.requires_gpu,
             "min_vram_gb": self.min_vram_gb,
             "timeout_seconds": self.timeout_seconds
+        }
+
+    def estimate_resources(self, input_data: Any) -> Dict[str, Any]:
+        """
+        Hook 2: Estimate resource needs based on actual input data size.
+        Override in subclasses for data-aware estimation.
+        Returns dict with keys: cpu_cores, ram_mb, gpu_required, vram_mb, estimated_io_mb.
+        """
+        size_estimate_mb = 1.0
+        if isinstance(input_data, dict):
+            size_estimate_mb = max(0.1, len(str(input_data)) / (1024 * 1024))
+        return {
+            "cpu_cores": self.min_cpu_cores,
+            "ram_mb": int(self.min_ram_gb * 1024),
+            "gpu_required": self.requires_gpu,
+            "vram_mb": int(self.min_vram_gb * 1024),
+            "estimated_io_mb": round(size_estimate_mb, 2),
         }
 
     def validate_input(self, input_data: dict) -> Tuple[bool, str]:
@@ -81,7 +101,12 @@ class TaskDefinition(ABC):
 
     def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
         """
-        7. Verify the mathematical correctness, completeness, and integrity of the final aggregated result.
+        7. Verify the mathematical correctness, completeness, and integrity
+        of the final aggregated result.
+
+        System Invariant: CORRECTNESS > STATUS
+        If this returns (False, error), the job MUST NOT be marked COMPLETED.
+        The aggregator will set job.status = 'validation_failed' instead.
         """
         if not isinstance(final_result, dict):
             return False, "Final result must be a dictionary"

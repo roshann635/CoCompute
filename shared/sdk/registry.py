@@ -23,6 +23,7 @@ import heapq
 import zlib
 import base64
 import random
+import hashlib
 from typing import Optional, Type, List, Dict, Tuple, Any
 from collections import Counter
 
@@ -49,7 +50,18 @@ class SortingTask(TaskDefinition):
         seed = input_data.get("seed", 42)
         random.seed(seed)
         data_array = [random.randint(1, 1000000) for _ in range(array_size)]
-        
+
+        # ── Correctness anchor: store lightweight multiset fingerprint ────
+        # We do NOT store the full Counter in the DB (could be 1M+ entries).
+        # Instead: count + SHA-256 hash of the sorted Counter items.
+        multiset_hash = hashlib.sha256(
+            json.dumps(sorted(Counter(data_array).items())).encode()
+        ).hexdigest()
+        input_data["_validation"] = {
+            "input_count": array_size,
+            "input_multiset_hash": multiset_hash,
+        }
+
         chunk_size = math.ceil(array_size / chunks) if array_size else 1
         tasks = []
         for i in range(chunks):
@@ -103,12 +115,35 @@ class SortingTask(TaskDefinition):
         }
 
     def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        """End-to-end correctness: ordering + element count + multiset equality."""
+        # 1. Ordering check
         if not final_result.get("is_sorted", False):
             return False, "Global merged array is not sorted"
+
+        # 2. Element count check
         if input_data:
             expected_size = int(input_data.get("array_size", 0))
-            if expected_size > 0 and final_result.get("total_elements") != expected_size:
-                return False, f"Expected {expected_size} elements, received {final_result.get('total_elements')}"
+            actual_size = final_result.get("total_elements", 0)
+            if expected_size > 0 and actual_size != expected_size:
+                return False, f"Element count mismatch: expected {expected_size}, got {actual_size}"
+
+            # 3. Multiset equality via hash comparison (CORRECTNESS > STATUS)
+            # The output must contain exactly the same elements as the input,
+            # not just the same count. This catches swapped/duplicated/dropped elements.
+            validation_meta = input_data.get("_validation", {})
+            expected_hash = validation_meta.get("input_multiset_hash")
+            if expected_hash:
+                sorted_array = final_result.get("sorted_array", [])
+                if sorted_array:
+                    output_hash = hashlib.sha256(
+                        json.dumps(sorted(Counter(sorted_array).items())).encode()
+                    ).hexdigest()
+                    if output_hash != expected_hash:
+                        return False, (
+                            f"Multiset verification FAILED: input hash={expected_hash[:16]}... "
+                            f"output hash={output_hash[:16]}... — elements were lost or corrupted"
+                        )
+
         return True, ""
 
 
@@ -174,7 +209,7 @@ class MatrixMultiplyTask(TaskDefinition):
     def aggregate(self, results: List[dict]) -> dict:
         all_rows = []
         for r in results:
-            data = r.get("result_data", {})
+            data = r.get("result_data") if isinstance(r, dict) and "result_data" in r else r
             if isinstance(data, dict):
                 start_row = data.get("start_row", 0)
                 rows = data.get("result_rows", [])
@@ -187,11 +222,49 @@ class MatrixMultiplyTask(TaskDefinition):
 
         return {
             "result_matrix": result_matrix,
+            "matrix_c": result_matrix,
             "dimensions": f"{len(result_matrix)}x{cols}",
             "rows": len(result_matrix),
             "cols": cols,
             "validation": {"valid": True, "dimensions": f"{len(result_matrix)}x{cols}"}
         }
+
+    def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        """End-to-end: dimension check + row completeness + optional reference verification."""
+        if not input_data:
+            return True, ""
+
+        expected_rows = int(input_data.get("rows_a", 0))
+        expected_cols = int(input_data.get("cols_b", 0))
+        actual_rows = final_result.get("rows", 0)
+        actual_cols = final_result.get("cols", 0)
+
+        # 1. Dimension check
+        if expected_rows > 0 and actual_rows != expected_rows:
+            return False, f"Row count mismatch: expected {expected_rows}, got {actual_rows}"
+        if expected_cols > 0 and actual_cols != expected_cols:
+            return False, f"Column count mismatch: expected {expected_cols}, got {actual_cols}"
+
+        # 2. Row index completeness (no gaps, no duplicates)
+        matrix = final_result.get("result_matrix", [])
+        if expected_rows > 0 and len(matrix) != expected_rows:
+            return False, f"Matrix has {len(matrix)} rows, expected {expected_rows}"
+
+        # 3. For small matrices, verify against single-node reference
+        if expected_rows > 0 and expected_rows <= 100 and expected_cols <= 100:
+            cols_a = int(input_data.get("cols_a", 0))
+            seed = input_data.get("seed", 42)
+            if cols_a > 0:
+                random.seed(seed)
+                matrix_a = [[random.randint(1, 10) for _ in range(cols_a)] for _ in range(expected_rows)]
+                matrix_b = [[random.randint(1, 10) for _ in range(expected_cols)] for _ in range(cols_a)]
+                for i in range(expected_rows):
+                    for j in range(expected_cols):
+                        expected_val = sum(matrix_a[i][k] * matrix_b[k][j] for k in range(cols_a))
+                        if i < len(matrix) and j < len(matrix[i]) and matrix[i][j] != expected_val:
+                            return False, f"Reference mismatch at C[{i}][{j}]: expected {expected_val}, got {matrix[i][j]}"
+
+        return True, ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -224,9 +297,11 @@ class StatisticsTask(TaskDefinition):
 
     def execute(self, payload: dict) -> dict:
         numbers = payload.get("numbers", [])
+        total = sum(numbers)
         return {
             "values": sorted(numbers),
-            "sum": sum(numbers),
+            "sum": total,
+            "sum_sq": sum(x * x for x in numbers),  # For mergeable variance
             "count": len(numbers),
             "min": min(numbers) if numbers else None,
             "max": max(numbers) if numbers else None,
@@ -240,12 +315,12 @@ class StatisticsTask(TaskDefinition):
         global_max = None
 
         for r in results:
-            data = r.get("result_data", {})
+            data = r.get("result_data") if isinstance(r, dict) and "result_data" in r else r
             if isinstance(data, dict):
                 vals = data.get("values", [])
                 all_values.extend(vals)
                 total_sum += data.get("sum", 0.0)
-                total_count += data.get("count", 0)
+                total_count += data.get("count", len(vals))
 
                 c_min = data.get("min")
                 c_max = data.get("max")
@@ -275,6 +350,16 @@ class StatisticsTask(TaskDefinition):
             "min": global_min,
             "max": global_max,
         }
+
+    def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        """Verify element count matches expected dataset size."""
+        if not input_data:
+            return True, ""
+        expected_count = int(input_data.get("array_size", 0))
+        actual_count = final_result.get("count", 0)
+        if expected_count > 0 and actual_count != expected_count:
+            return False, f"Statistics count mismatch: expected {expected_count}, got {actual_count}"
+        return True, ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -539,7 +624,7 @@ class PrimeGenerationTask(TaskDefinition):
     def aggregate(self, results: List[dict]) -> dict:
         all_primes = []
         for r in results:
-            data = r.get("result_data", {})
+            data = r.get("result_data") if isinstance(r, dict) and "result_data" in r else r
             if isinstance(data, dict):
                 primes = data.get("primes", [])
                 all_primes.extend(primes)
@@ -550,8 +635,54 @@ class PrimeGenerationTask(TaskDefinition):
             "sample_primes": all_primes[:100],
             "first_prime": all_primes[0] if all_primes else None,
             "largest_prime": all_primes[-1] if all_primes else None,
-            "all_primes": all_primes
+            "all_primes": all_primes,
+            "primes": all_primes
         }
+
+    def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        """Verify: no duplicates, ordering, and spot-check primality."""
+        primes = final_result.get("all_primes", [])
+        if not primes:
+            return True, ""
+
+        # 1. No duplicates
+        if len(primes) != len(set(primes)):
+            dup_count = len(primes) - len(set(primes))
+            return False, f"Found {dup_count} duplicate primes in output"
+
+        # 2. Ordering
+        for i in range(len(primes) - 1):
+            if primes[i] >= primes[i + 1]:
+                return False, f"Primes not sorted at index {i}: {primes[i]} >= {primes[i+1]}"
+
+        # 3. Spot-check primality (first 20 + last 20 + 10 random)
+        def is_prime(n):
+            if n <= 1: return False
+            if n <= 3: return True
+            if n % 2 == 0 or n % 3 == 0: return False
+            i = 5
+            while i * i <= n:
+                if n % i == 0 or n % (i + 2) == 0: return False
+                i += 6
+            return True
+
+        sample = primes[:20] + primes[-20:]
+        if len(primes) > 50:
+            import random as _rng
+            _rng.seed(42)  # Deterministic spot-check
+            sample += _rng.sample(primes, min(10, len(primes)))
+        for p in sample:
+            if not is_prime(p):
+                return False, f"Non-prime {p} found in output"
+
+        # 4. Range check
+        if input_data:
+            start = int(input_data.get("start", 1))
+            end = int(input_data.get("end", 100000))
+            if primes[0] < start or primes[-1] >= end:
+                return False, f"Primes outside expected range [{start}, {end})"
+
+        return True, ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -695,7 +826,7 @@ class DistributedTrainingTask(TaskDefinition):
         epoch_history = {}
 
         for r in results:
-            data = r.get("result_data", {})
+            data = r.get("result_data") if isinstance(r, dict) and "result_data" in r else r
             if isinstance(data, dict):
                 total_accuracy += data.get("final_accuracy", 0.0)
                 total_loss += data.get("final_loss", 0.0)
@@ -726,6 +857,13 @@ class DistributedTrainingTask(TaskDefinition):
             "shards_synchronized": shards_count,
             "model_checkpoint": "minio://models/final_model.pt"
         }
+
+    def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        if not final_result.get("training_curve"):
+            return False, "Empty training curve in aggregated training output"
+        if final_result.get("shards_synchronized", 0) <= 0:
+            return False, "No shards synchronized in distributed training aggregation"
+        return True, ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -780,7 +918,7 @@ class DistributedInferenceTask(TaskDefinition):
     def aggregate(self, results: List[dict]) -> dict:
         all_preds = []
         for r in results:
-            data = r.get("result_data", {})
+            data = r.get("result_data") if isinstance(r, dict) and "result_data" in r else r
             if isinstance(data, dict):
                 all_preds.extend(data.get("predictions", []))
         
@@ -793,6 +931,14 @@ class DistributedInferenceTask(TaskDefinition):
             "predictions_sample": all_preds[:50],
             "predictions": all_preds
         }
+
+    def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        if input_data:
+            expected = int(input_data.get("batch_count", 0))
+            actual = final_result.get("total_inferences", 0)
+            if expected > 0 and actual != expected:
+                return False, f"Inference count mismatch: expected {expected}, got {actual}"
+        return True, ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -857,7 +1003,7 @@ class LLMFineTuningTask(TaskDefinition):
         step_aggregates = {}
 
         for r in results:
-            data = r.get("result_data", {})
+            data = r.get("result_data") if isinstance(r, dict) and "result_data" in r else r
             if isinstance(data, dict):
                 total_loss += data.get("final_loss", 0.0)
                 for log in data.get("step_logs", []):
@@ -885,6 +1031,13 @@ class LLMFineTuningTask(TaskDefinition):
             "shards_synchronized": shards,
             "final_model_checkpoint": "minio://models/llm_final_adapter.pt"
         }
+
+    def validate_final(self, final_result: dict, input_data: Optional[dict] = None) -> Tuple[bool, str]:
+        if not final_result.get("training_curve"):
+            return False, "Empty training curve in LLM fine-tuning aggregation"
+        if final_result.get("shards_synchronized", 0) <= 0:
+            return False, "No shards synchronized in LLM fine-tuning aggregation"
+        return True, ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

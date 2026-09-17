@@ -48,6 +48,8 @@ coverage.xml
 *.cover
 .hypothesis/
 test_model_train.pkl
+test_cocompute.db
+test_cocompute.db-journal
 
 # Node / Frontend Dashboard
 node_modules/
@@ -61,6 +63,7 @@ yarn-error.log*
 
 # Databases & local persistent storage
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
 *.sqlite-journal
@@ -70,8 +73,11 @@ storage/
 storage/**
 results/
 results/**
+cocompute_artifacts/
+cocompute_artifacts/**
 minio_data/
 redis_data/
+checkpoints/
 
 # AI / ML checkpoints, datasets & weights
 *.pt
