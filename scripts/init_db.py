@@ -6,7 +6,7 @@ Usage:
 
 Options:
   --clean        Remove stale/temporary SQLite files and storage results.
-  --seed-admin   Create a default admin account (admin / admin123) if no user exists.
+  --seed-admin   Create a default admin account if no user exists.
   --db-url       Override database URL (defaults to DATABASE_URL or sqlite:///d:/CoCompute/cocompute.db)
 """
 
@@ -82,21 +82,27 @@ def init_database(db_url: str, seed_admin: bool = True):
 
     # Seed default admin user if requested
     if seed_admin:
+        import secrets
         Session = sessionmaker(bind=engine)
         session = Session()
         try:
-            admin_user = session.query(models.User).filter(models.User.username == "admin").first()
+            admin_user = session.query(models.User).filter(models.User.role == "admin").first()
             if not admin_user:
-                default_pass = os.getenv("COCOMPUTE_DEFAULT_ADMIN_PASSWORD", "admin123")
+                initial_password = os.getenv("COCOMPUTE_DEFAULT_ADMIN_PASSWORD")
+                if not initial_password:
+                    initial_password = secrets.token_urlsafe(12)
+                    print(f"  - Initial administrator password generated: {initial_password}")
+                else:
+                    print("  - Initial administrator user created from environment.")
+
                 admin_user = models.User(
-                    username="admin",
-                    email="admin@cocompute.local",
-                    password_hash=hash_password(default_pass),
+                    username=os.getenv("COCOMPUTE_DEFAULT_ADMIN_USERNAME", "admin"),
+                    email=os.getenv("COCOMPUTE_DEFAULT_ADMIN_EMAIL", "admin@cocompute.local"),
+                    password_hash=hash_password(initial_password),
                     role="admin"
                 )
                 session.add(admin_user)
                 session.commit()
-                print("  - Seeded default admin account.")
             else:
                 print("  - Admin account already exists.")
         finally:
@@ -106,7 +112,7 @@ def init_database(db_url: str, seed_admin: bool = True):
 def main():
     parser = argparse.ArgumentParser(description="CoCompute Database Initialization & Cleanup")
     parser.add_argument("--clean", action="store_true", help="Clean stale DB files and storage results first")
-    parser.add_argument("--seed-admin", action="store_true", default=True, help="Seed default admin user (admin/admin123)")
+    parser.add_argument("--seed-admin", action="store_true", default=True, help="Seed initial admin user")
     parser.add_argument("--no-seed-admin", dest="seed_admin", action="store_false", help="Do not seed admin user")
     parser.add_argument("--db-url", type=str, default=None, help="Database connection URL")
 
