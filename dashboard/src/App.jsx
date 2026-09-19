@@ -440,7 +440,7 @@ function SubmitJobModal({ show, onClose, token }) {
         const d = await res.json();
         if (res.status === 401) {
           localStorage.removeItem('token');
-          alert('Authentication expired or invalid session. Please sign in with username: admin and password: admin123.');
+          alert('Authentication expired or invalid session. Please sign in again.');
           window.location.reload();
           return;
         }

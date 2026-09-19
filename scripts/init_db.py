@@ -87,15 +87,16 @@ def init_database(db_url: str, seed_admin: bool = True):
         try:
             admin_user = session.query(models.User).filter(models.User.username == "admin").first()
             if not admin_user:
+                default_pass = os.getenv("COCOMPUTE_DEFAULT_ADMIN_PASSWORD", "admin123")
                 admin_user = models.User(
                     username="admin",
                     email="admin@cocompute.local",
-                    password_hash=hash_password("admin123"),
+                    password_hash=hash_password(default_pass),
                     role="admin"
                 )
                 session.add(admin_user)
                 session.commit()
-                print("  - Seeded default admin account (Username: admin | Password: admin123)")
+                print("  - Seeded default admin account.")
             else:
                 print("  - Admin account already exists.")
         finally:
