@@ -2,11 +2,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-# PostgreSQL connection - configurable via environment variable
+# Load .env file from root
+env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
 SQLALCHEMY_DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://cocompute:cocompute@localhost:5432/cocompute"
+    f"sqlite:///{Path(__file__).resolve().parent.parent.parent.parent / 'cocompute.db'}"
 )
 
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):

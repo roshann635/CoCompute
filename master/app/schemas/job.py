@@ -37,8 +37,8 @@ class JobResponse(BaseModel):
     min_vram_gb: float = 0.0
     credits_cost: float = 0.0
     estimated_energy_kwh: float = 0.0
-    carbon_gco2_eq: float = 0.0
-    submission_time: datetime
+    submission_time: Optional[datetime] = None
+    created_at: Optional[datetime] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     result_preview: Optional[str] = None

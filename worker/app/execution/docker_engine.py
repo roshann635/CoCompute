@@ -16,7 +16,19 @@ import shutil
 import hashlib
 from typing import Dict, Any
 
-from shared.sdk.registry import TaskRegistry
+try:
+    from shared.sdk.registry import TaskRegistry
+except ImportError:
+    # Try adding parent directories or fallback
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+    try:
+        from shared.sdk.registry import TaskRegistry
+    except ImportError:
+        class TaskRegistryFallback:
+            @staticmethod
+            def get(task_type: str):
+                return None
+        TaskRegistry = TaskRegistryFallback()
 
 logger = logging.getLogger(__name__)
 

@@ -35,7 +35,7 @@ def ensure_lease_row(db):
             db.rollback()
 
 
-def acquire_or_renew_lease(db, incarnation_id: str, hostname: str = "master-host") -> bool:
+def acquire_or_renew_lease(db, incarnation_id: str, hostname: str = "master-host", force: bool = False) -> bool:
     """
     Attempts to acquire or renew the master leadership lease via atomic check.
     Returns True if this incarnation is the active leader.
@@ -54,6 +54,7 @@ def acquire_or_renew_lease(db, incarnation_id: str, hostname: str = "master-host
             exp = exp.replace(tzinfo=timezone.utc)
             
         can_acquire = (
+            force or
             lease.incarnation_id == incarnation_id or
             exp is None or
             exp < now

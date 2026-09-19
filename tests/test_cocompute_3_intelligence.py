@@ -1,5 +1,5 @@
 """
-CoCompute 3.0 Comprehensive Intelligence Test Suite.
+CoCompute Comprehensive Intelligence Test Suite.
 
 Validates all 12 Intelligence Pillars:
   1. Workload Intelligence & Profiling Engine

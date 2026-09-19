@@ -1,5 +1,5 @@
 """
-CoCompute 3.0 Unified Intelligence Engine (CIE) Scheduler.
+CoCompute Unified Intelligence Engine (CIE) Scheduler.
 
 Implements all 8 pluggable scheduling strategies + Adaptive Hybrid Scheduler (AHS):
   1. adaptive_hybrid (DEFAULT) — Workload-profiler driven strategy with closed-loop feedback
@@ -17,8 +17,8 @@ Integrates with:
   - Redis Job Queue & Pub/Sub rescheduling (GAP 3)
   - Immediate SUSPECTED state and automatic attempt incrementing (GAP 4)
   - Provenance attempt tracking (ChunkAttempt) (GAP 5)
-  - Speculative execution & Straggler watchdog (CoCompute 3.0)
-  - Work Stealing dynamic chunk assignment (CoCompute 3.0)
+  - Speculative execution & Straggler watchdog (CoCompute)
+  - Work Stealing dynamic chunk assignment (CoCompute)
 """
 
 import asyncio
@@ -458,7 +458,7 @@ async def fault_tolerance_loop():
         db = None
         try:
             db = SessionLocal()
-            cutoff = datetime.now(timezone.utc) - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+            cutoff = datetime.utcnow() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
             stale_workers = db.query(models.Worker).filter(
                 models.Worker.status.in_(["online", "busy"]),
                 models.Worker.last_seen < cutoff

@@ -1,5 +1,5 @@
 """
-Speculative Execution & Straggler Mitigation Engine — CoCompute 3.0.
+Speculative Execution & Straggler Mitigation Engine — CoCompute.
 
 Periodically inspects running task chunks. If a chunk is taking unusually long
 (e.g., execution duration > 2.0x median of completed chunks in that job),
@@ -148,7 +148,11 @@ def check_and_spawn_speculative_attempts(db: Session) -> List[Dict[str, Any]]:
                 }
 
                 try:
-                    asyncio.create_task(manager.send_to_worker(fast_worker.worker_uid, msg))
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(manager.send_to_worker(fast_worker.worker_uid, msg))
+                except RuntimeError:
+                    # No running event loop (e.g. synchronous unit test context)
+                    pass
                 except Exception as e:
                     logger.error(f"[Speculative] Failed to dispatch speculative attempt: {e}")
 

@@ -19,13 +19,21 @@ class ConnectionManager:
             del self.active_connections[worker_uid]
             logger.info(f"Worker {worker_uid} disconnected")
 
-    async def send_personal_message(self, message: dict, worker_uid: str):
+    async def send_to_worker(self, worker_uid: str, message: dict) -> bool:
         if worker_uid in self.active_connections:
             websocket = self.active_connections[worker_uid]
             await websocket.send_json(message)
+            return True
+        return False
+
+    async def send_personal_message(self, message: dict, worker_uid: str):
+        await self.send_to_worker(worker_uid, message)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections.values():
-            await connection.send_json(message)
+        for connection in list(self.active_connections.values()):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
 
 manager = ConnectionManager()

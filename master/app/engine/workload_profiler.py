@@ -1,5 +1,5 @@
 """
-Workload Intelligence Layer — CoCompute 3.0 Workload Profiler.
+Workload Intelligence Layer — CoCompute Workload Profiler.
 
 Inspects incoming job parameters, data volume, and algorithmic profile to determine:
   - CPU intensity (0.0 to 1.0)

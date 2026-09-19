@@ -36,7 +36,7 @@ def recover_after_restart(db, incarnation_id: str, hostname: str = "master-host"
     }
 
     # 1. Acquire leadership
-    acquired = acquire_or_renew_lease(db, incarnation_id, hostname)
+    acquired = acquire_or_renew_lease(db, incarnation_id, hostname, force=True)
     report["leadership_acquired"] = acquired
     if not acquired:
         logger.warning(f"[Recovery] Failed to acquire master leadership lease for incarnation {incarnation_id}")

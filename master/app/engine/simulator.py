@@ -1,5 +1,5 @@
 """
-Cluster Digital Twin & Simulation Engine — CoCompute 3.0.
+Cluster Digital Twin & Simulation Engine — CoCompute.
 
 Simulates heterogeneous virtual compute nodes (e.g., 10 to 100 virtual workers)
 with configurable CPU cores, RAM, GPU, network latency, failure probabilities,

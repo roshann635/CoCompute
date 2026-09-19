@@ -47,27 +47,24 @@ class WorkerDiscoveryProtocol(asyncio.DatagramProtocol):
             if message.get("action") == "DISCOVER_RESPONSE":
                 self.discovered = True
                 master_ip = message.get("master_ip")
+                master_ws_port = int(message.get("master_ws_port") or message.get("master_port", 8000))
                 
-                # Network resolution fix: check if master_ip is resolvable. If not, use sender's IP addr[0].
-                try:
-                    if master_ip:
-                        socket.gethostbyname(master_ip)
-                    else:
-                        master_ip = addr[0]
-                except (socket.gaierror, TypeError):
-                    logger.warning(f"Unresolvable master IP received ('{master_ip}'). Falling back to sender's IP: {addr[0]}")
+                # Network resolution fix: check if master_ip is usable from LAN
+                if not master_ip or master_ip in ("0.0.0.0", "127.0.0.1", "localhost"):
                     master_ip = addr[0]
+                else:
+                    try:
+                        socket.gethostbyname(master_ip)
+                    except (socket.gaierror, TypeError):
+                        logger.warning(f"Unresolvable master IP received ('{master_ip}'). Falling back to sender's IP: {addr[0]}")
+                        master_ip = addr[0]
 
-                master_ws_port = message.get("master_ws_port")
-                registration_endpoint = f"ws://{master_ip}:{master_ws_port}/ws/worker/{WORKER_UID}" if "WORKER_UID" in globals() else message.get("registration_endpoint")
-                
+                registration_endpoint = f"ws://{master_ip}:{master_ws_port}/ws/worker"
                 logger.info(f"Discovered Master Node at {master_ip}:{master_ws_port}")
                 
                 if self.on_discovered_callback:
-                    # Trigger the callback to proceed with registration
                     self.on_discovered_callback(master_ip, master_ws_port, registration_endpoint)
                 
-                # Close the transport as we don't need UDP anymore
                 self.transport.close()
                 
         except Exception as e:
@@ -76,21 +73,18 @@ class WorkerDiscoveryProtocol(asyncio.DatagramProtocol):
     def error_received(self, exc):
         logger.error(f"UDP Error received: {exc}")
 
-async def discover_master(udp_port: int = 9999, timeout: float = 8.0) -> dict:
+
+async def discover_master(udp_port: int = 9999, timeout: float = 8.0) -> tuple:
     """
     Broadcasts on the local network to find the master node.
-    Returns a dictionary with master details or raises TimeoutError if UDP broadcast fails.
+    Returns (master_ip, master_port) tuple or raises TimeoutError if UDP broadcast fails.
     """
     loop = asyncio.get_running_loop()
     future = loop.create_future()
     
     def on_discovered(ip, port, endpoint):
         if not future.done():
-            future.set_result({
-                "master_ip": ip,
-                "master_ws_port": port,
-                "registration_endpoint": endpoint
-            })
+            future.set_result((ip, port))
 
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: WorkerDiscoveryProtocol(on_discovered),
@@ -108,3 +102,4 @@ async def discover_master(udp_port: int = 9999, timeout: float = 8.0) -> dict:
     finally:
         if not transport.is_closing():
             transport.close()
+

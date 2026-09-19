@@ -377,7 +377,7 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
     job.actual_duration_sec = exec_time
     job.result_preview = _generate_result_preview(job.job_type, aggregated, exec_time)
 
-    # 1. CoCompute 3.0 Energy & Carbon Footprint Modeling
+    # 1. CoCompute Energy & Carbon Footprint Modeling
     if exec_time:
         energy_metrics = estimate_job_energy(job, exec_time, job.workers_used, getattr(job, "requires_gpu", False))
         aggregated["energy_metrics"] = energy_metrics

@@ -1,5 +1,5 @@
 """
-Worker Reliability Intelligence Engine — CoCompute 3.0.
+Worker Reliability Intelligence Engine — CoCompute.
 
 Calculates the 5-factor composite reliability score:
   Score = 0.30 * success_rate

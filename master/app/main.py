@@ -143,7 +143,7 @@ async def startup_event():
     # Start periodic AI model training
     asyncio.create_task(periodic_training_loop())
 
-    # Start Straggler Watchdog & Speculative Execution Engine (CoCompute 3.0)
+    # Start Straggler Watchdog & Speculative Execution Engine (CoCompute)
     asyncio.create_task(straggler_watchdog_loop())
 
     # Start dashboard broadcast loop

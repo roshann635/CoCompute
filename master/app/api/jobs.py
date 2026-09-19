@@ -38,7 +38,7 @@ def submit_job(
         models.Job.status.in_(["pending", "running", "aggregating"])
     ).count()
 
-    max_concurrent = current_user.max_concurrent_jobs or 5
+    max_concurrent = 100 if current_user.role == "admin" else (current_user.max_concurrent_jobs or 5)
     if active_jobs >= max_concurrent:
         raise HTTPException(
             status_code=429,
@@ -163,8 +163,8 @@ def submit_job(
     # Create Task record
     db_task = models.Task(
         job_id=db_job.id,
+        name=f"{job_in.job_type} Task",
         type=job_in.job_type,
-        payload_ref={"description": f"{job_in.job_type} distributed task"},
         status="pending"
     )
     db.add(db_task)
@@ -174,14 +174,12 @@ def submit_job(
     # Create TaskChunk records
     for chunk_data in task_data_list:
         chunk_index = chunk_data["chunk_index"]
-        chunk_uid = f"CHUNK-{chunk_index + 1:03d}"
-        input_ref = f"minio://chunks/{db_job.job_uid}/{chunk_uid}.bin"
+        chunk_uid = f"JOB-{db_job.id:03d}-CHUNK-{chunk_index + 1:03d}"
         db_chunk = models.TaskChunk(
             task_id=db_task.id,
             chunk_uid=chunk_uid,
             chunk_index=chunk_index,
-            data_payload=chunk_data["payload"],
-            input_reference=input_ref,
+            input_data=chunk_data.get("payload", {}),
             status="pending"
         )
         db.add(db_chunk)
@@ -198,7 +196,7 @@ def submit_job(
 @router.get("/", response_model=list[schemas.JobResponse])
 def list_jobs(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db)):
     """List all jobs."""
-    return db.query(models.Job).order_by(models.Job.submission_time.desc()).offset(skip).limit(limit).all()
+    return db.query(models.Job).order_by(models.Job.created_at.desc()).offset(skip).limit(limit).all()
 
 
 @router.get("/{job_id}", response_model=schemas.JobDetailResponse)

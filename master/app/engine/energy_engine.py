@@ -1,5 +1,5 @@
 """
-Energy-Aware & Carbon Modeling Engine — CoCompute 3.0.
+Energy-Aware & Carbon Modeling Engine — CoCompute.
 
 Models estimated power consumption:
   P = P_idle + P_cpu * U_cpu + P_gpu * U_gpu

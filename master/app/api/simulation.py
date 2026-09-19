@@ -1,5 +1,5 @@
 """
-Cluster Digital Twin & Simulation REST API — CoCompute 3.0.
+Cluster Digital Twin & Simulation REST API — CoCompute.
 
 Provides:
   - POST /api/v1/simulation/start  — Launch N simulated virtual compute nodes

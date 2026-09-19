@@ -1,5 +1,5 @@
 """
-Marketplace & Compute Pool REST API — CoCompute 3.0.
+Marketplace & Compute Pool REST API — CoCompute.
 
 Provides:
   - GET  /api/v1/marketplace/pool — Aggregate cluster capacity, hardware pools, and utilization %

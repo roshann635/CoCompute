@@ -6,7 +6,7 @@ import {
   FileText, Search, RefreshCw, Bell, BellOff, X, Settings,
   ChevronRight, Terminal, Network, Database, Layers, Eye,
   ArrowUpRight, ArrowDownRight, Gauge, Sliders, Info, AlertCircle,
-  Download, FileDown, History, GitCommit, FolderGit2, Award, FileCode, CheckSquare, Coins, Leaf
+  Download, FileDown, History, GitCommit, FolderGit2, Award, FileCode, CheckSquare, Coins, Leaf, LogOut
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
@@ -73,7 +73,7 @@ function AuthScreen({ onAuth }) {
               <Zap className="text-primary w-7 h-7" />
             </div>
           </div>
-          <h1 className="text-3xl font-extrabold gradient-text">CoCompute 3.0</h1>
+          <h1 className="text-3xl font-extrabold gradient-text">CoCompute</h1>
           <p className="text-gray-400 text-sm">Adaptive & Self-Healing Distributed Computing Platform</p>
         </div>
 
@@ -436,7 +436,16 @@ function SubmitJobModal({ show, onClose, token }) {
           min_vram_gb: requiresGpu ? minVram : 0.0
         })
       });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail); }
+      if (!res.ok) {
+        const d = await res.json();
+        if (res.status === 401) {
+          localStorage.removeItem('token');
+          alert('Authentication expired or invalid session. Please sign in with username: admin and password: admin123.');
+          window.location.reload();
+          return;
+        }
+        throw new Error(d.detail || 'Failed to submit workload');
+      }
       onClose();
     } catch (e) { alert(e.message); }
     finally { setLoading(false); }
@@ -448,7 +457,7 @@ function SubmitJobModal({ show, onClose, token }) {
     <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="glass-panel p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4 scale-in" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-white/10 pb-3">
-          <h2 className="text-lg font-bold text-white flex items-center gap-2"><Play className="w-5 h-5 text-primary" /> Submit Distributed Job (CoCompute 3.0)</h2>
+          <h2 className="text-lg font-bold text-white flex items-center gap-2"><Play className="w-5 h-5 text-primary" /> Submit Distributed Job</h2>
           <button onClick={onClose} className="p-1 rounded text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
         </div>
 
@@ -1483,7 +1492,7 @@ function App() {
             <div className="p-1.5 rounded-lg bg-primary/10 border border-primary/20">
               <Zap className="text-primary w-5 h-5" />
             </div>
-            <h1 className="text-xl font-extrabold gradient-text">CoCompute 3.0</h1>
+            <h1 className="text-xl font-extrabold gradient-text">CoCompute</h1>
             <div className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${wsStatus === 'connected' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'}`}>
               <div className={`w-1.5 h-1.5 rounded-full ${wsStatus === 'connected' ? 'bg-emerald-400 blink' : 'bg-yellow-400'}`} />
               {wsStatus === 'connected' ? 'Adaptive Hybrid' : 'Polling'}
@@ -1506,8 +1515,13 @@ function App() {
             </button>
             <div className="flex items-center gap-1.5 px-3 py-2 bg-white/5 rounded-xl border border-white/10 text-xs text-gray-400">
               <Shield className="w-3.5 h-3.5 text-accent" />
-              <span>{user?.username} ({user?.role})</span>
+              <span>{user?.username || 'User'} ({user?.role || 'Admin'})</span>
             </div>
+            <button onClick={() => { localStorage.removeItem('token'); setToken(null); setUser(null); }} title="Sign Out"
+              className="flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-red-500/20 hover:text-red-400 text-gray-400 rounded-xl border border-white/10 text-xs transition">
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Logout</span>
+            </button>
           </div>
         </div>
       </header>

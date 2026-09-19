@@ -14,8 +14,26 @@ from .network.discovery import discover_master
 from .monitor.metrics import get_hardware_info, get_current_metrics, increment_running_tasks, decrement_running_tasks
 from .execution.docker_engine import execute_task
 from .history.task_history import save_task_record
-from master.app.services.integrity import compute_sha256
-from master.app.services.auth_service import generate_worker_token
+
+try:
+    from master.app.services.integrity import compute_sha256
+    from master.app.services.auth_service import generate_worker_token
+except ImportError:
+    import hashlib
+    import hmac
+
+    def compute_sha256(data) -> str:
+        if isinstance(data, bytes):
+            raw_bytes = data
+        elif isinstance(data, str):
+            raw_bytes = data.encode("utf-8")
+        else:
+            raw_bytes = json.dumps(data, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(raw_bytes).hexdigest()
+
+    def generate_worker_token(worker_id: str) -> str:
+        secret = os.getenv("COCOMPUTE_WORKER_SECRET", "cocompute-default-cluster-secret-2026")
+        return hmac.new(secret.encode("utf-8"), worker_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)

@@ -51,7 +51,7 @@ class User(Base):
     max_cpu_hours_per_day = Column(Float, default=100.0)
     priority = Column(String(20), default="NORMAL")  # NORMAL, HIGH, CRITICAL
 
-    # CoCompute 3.0 Compute Credit System
+    # CoCompute Compute Credit System
     credits_balance = Column(Float, default=500.0)
     credits_daily_quota = Column(Float, default=500.0)
     credits_consumed_today = Column(Float, default=0.0)
@@ -108,7 +108,7 @@ class Worker(Base):
     agent_version = Column(String(20), default="3.0.0")
     python_version = Column(String(20), nullable=True)
     
-    # 5-Factor Reliability Intelligence (CoCompute 3.0)
+    # 5-Factor Reliability Intelligence (CoCompute)
     reliability_score = Column(Float, default=1.0)          # Composite score 0.0 to 1.0
     execution_consistency = Column(Float, default=1.0)     # Variance of runtimes
     network_stability = Column(Float, default=1.0)         # Latency stability index
@@ -119,15 +119,15 @@ class Worker(Base):
     total_tasks_failed = Column(Integer, default=0)
     running_tasks = Column(Integer, default=0)
     
-    # Trust & Enrollment Workflow (CoCompute 3.0)
+    # Trust & Enrollment Workflow (CoCompute)
     trust_status = Column(String(20), default="trusted")   # pending, trusted, rejected
     enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
     approved_by = Column(String(100), nullable=True)
     
-    # Self-Healing Lifecycle (CoCompute 3.0)
+    # Self-Healing Lifecycle (CoCompute)
     lifecycle_state = Column(String(20), default="healthy") # healthy, degraded, draining, failed, recovering, benchmarking
     
-    # Digital Twin Simulation Mode (CoCompute 3.0)
+    # Digital Twin Simulation Mode (CoCompute)
     is_simulated = Column(Boolean, default=False)
     simulation_config = Column(JSON, nullable=True)
     
@@ -167,6 +167,7 @@ class Job(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     name = Column(String(255))
+    description = Column(Text, nullable=True)
     job_type = Column(String(50))  # sorting, matrix_multiply, word_count, prime_generation, etc.
     scheduler_strategy = Column(String(50), default="adaptive_hybrid")  # adaptive_hybrid, capacity_based, etc.
     priority = Column(String(20), default="NORMAL")  # NORMAL, HIGH, CRITICAL
@@ -177,7 +178,7 @@ class Job(Base):
     rescheduled_tasks = Column(Integer, default=0)
     workers_used = Column(Integer, default=0)
     
-    # CoCompute 3.0 Workload Profiling & Energy Modeling
+    # CoCompute Workload Profiling & Energy Modeling
     workload_profile = Column(JSON, nullable=True)       # CPU/GPU/RAM/Network intensity, data size
     energy_mode = Column(String(20), default="BALANCED") # FAST, ECO, BALANCED
     estimated_energy_kwh = Column(Float, default=0.0)
@@ -217,6 +218,10 @@ class Job(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     params = Column(JSON, nullable=True)
     aggregated_result = Column(JSON, nullable=True)
+
+    @property
+    def submission_time(self):
+        return self.created_at
 
     # Relationships
     owner = relationship("User", back_populates="jobs")
@@ -262,7 +267,7 @@ class TaskChunk(Base):
     max_speculative = Column(Integer, default=2)
     accepted_attempt_id = Column(String(50), nullable=True)  # GAP 5 & Invariant 1: Duplicate attempt rejection guard
     
-    # CoCompute 3.0 Speculative Execution (Straggler Mitigation)
+    # CoCompute Speculative Execution (Straggler Mitigation)
     is_speculative = Column(Boolean, default=False)
     speculative_parent_chunk_id = Column(Integer, nullable=True)
 

@@ -1,5 +1,5 @@
 """
-AI-Powered Resource & Runtime Predictor with Closed-Loop Feedback — CoCompute 3.0.
+AI-Powered Resource & Runtime Predictor with Closed-Loop Feedback — CoCompute.
 
 Predicts:
   1. Expected chunk completion duration (seconds)

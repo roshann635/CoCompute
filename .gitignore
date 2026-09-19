@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyd
 .Python
 build/
 develop-eggs/
@@ -29,7 +30,10 @@ share/python-wheels/
 .env
 .env.local
 .env.*.local
+*.env
+!.env.example
 .venv
+.venv/
 venv/
 ENV/
 env/
@@ -48,29 +52,36 @@ coverage.xml
 *.cover
 .hypothesis/
 test_model_train.pkl
-test_cocompute.db
-test_cocompute.db-journal
+test_cocompute.db*
 
 # Node / Frontend Dashboard
 node_modules/
 dashboard/node_modules/
 dashboard/dist/
+dashboard/.vite/
 dist/
 dist-ssr/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# Databases & local persistent storage
+# Databases & local persistent storage (including SQLite WAL & SHM files)
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 *.sqlite-journal
-cocompute.db
-task_history.db
+*.sqlite-wal
+*.sqlite-shm
+cocompute.db*
+task_history.db*
 storage/
 storage/**
+master/app/storage/
+master/app/storage/**
 results/
 results/**
 cocompute_artifacts/
@@ -91,16 +102,21 @@ model.pkl
 # IDEs & System files
 .vscode/
 .idea/
+.cursor/
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
 Desktop.ini
 *.swp
 *.swo
 .project
 .settings/
 
-# SSL / TLS Secrets & Certs
-ssl/certs/
+# SSL / TLS Secrets & Certs (preserve structure if .gitkeep exists)
+ssl/certs/*
+!ssl/certs/.gitkeep
 *.pem
 *.key
 *.crt
@@ -116,6 +132,8 @@ cocompute_cache/
 *.bak
 logs/
 *.log
+*.log.*
 brain/
 .agents/
 .system_generated/
+.gemini/
