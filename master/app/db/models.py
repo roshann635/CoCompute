@@ -102,6 +102,7 @@ class Worker(Base):
     network_speed = Column(Float, default=0.0)  # Mbps
     network_latency_ms = Column(Float, default=1.0)
     platform = Column(String(100))
+    worker_type = Column(String(20), default="PHYSICAL")  # PHYSICAL, LOCAL
     cpu_model = Column(String(255), nullable=True)
     cpu_frequency = Column(Float, nullable=True)
     mac_address = Column(String(100), nullable=True)

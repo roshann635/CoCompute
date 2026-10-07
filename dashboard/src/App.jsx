@@ -142,6 +142,7 @@ function WorkerCard({ worker, onClick }) {
   const cpu = worker.cpu_utilization || 0;
   const ram = worker.ram_usage || 0;
   const gpu = worker.gpu_utilization || 0;
+  const isLocal = worker.worker_type === 'LOCAL';
 
   return (
     <div onClick={() => onClick(worker)}
@@ -150,6 +151,11 @@ function WorkerCard({ worker, onClick }) {
         <div className="flex items-center gap-2">
           <StIcon className={`w-3.5 h-3.5 ${st.color}`} />
           <span className="font-semibold text-white text-sm truncate max-w-[140px]">{worker.hostname || worker.worker_uid}</span>
+          {isLocal ? (
+            <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/30 font-bold">LOCAL</span>
+          ) : (
+            <span className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold">PHYSICAL</span>
+          )}
           {worker.is_simulated && (
             <span className="text-[9px] bg-purple-500/20 text-purple-400 px-1.5 py-0.2 rounded border border-purple-500/30">SIM</span>
           )}
@@ -190,8 +196,178 @@ function WorkerCard({ worker, onClick }) {
       </div>
 
       <div className="flex items-center justify-between text-[11px] text-gray-500 border-t border-white/5 pt-2">
-        <span>5-Factor Reliability: {((worker.reliability_score || 1) * 100).toFixed(0)}%</span>
+        <span className="truncate max-w-[130px]">{worker.capabilities?.os || worker.platform?.split(' ')[0] || 'OS'} • v{worker.agent_version || '3.1.0'}</span>
         <span className="capitalize text-accent font-semibold">{worker.lifecycle_state || 'healthy'}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Worker Onboarding Card ─────────────────────────────────────────────────
+function WorkerOnboardingCard({ masterInfo, workers = [] }) {
+  const [copied, setCopied] = useState(false);
+  const code = masterInfo?.master_code || 'CC-4827';
+  const ip = masterInfo?.ip_address || window.location.hostname || '127.0.0.1';
+  const port = masterInfo?.port || 8000;
+
+  const physicalCount = workers.filter(w => w.worker_type !== 'LOCAL').length;
+  const localCount = workers.filter(w => w.worker_type === 'LOCAL').length;
+
+  const copyCode = () => {
+    navigator.clipboard?.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="glass-panel p-5 border border-primary/30 bg-gradient-to-r from-primary/10 via-purple-500/5 to-transparent space-y-4 mb-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <Server className="w-5 h-5 text-primary" />
+            <h2 className="text-base font-bold text-white">Add Workers to Institutional Cluster</h2>
+            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30 font-semibold flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              Auto-Discovery Active
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">
+            Zero-friction worker deployment: Launch worker on any lab PC. It automatically authenticates and reports hardware capabilities.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="bg-black/50 border border-white/10 px-4 py-2 rounded-lg text-center">
+            <span className="text-[10px] text-gray-400 block font-semibold uppercase">Master Connect Code</span>
+            <span className="text-lg font-mono font-bold text-primary tracking-wider">{code}</span>
+          </div>
+          <button
+            onClick={copyCode}
+            className="px-3 py-2 bg-primary/20 hover:bg-primary/30 border border-primary/40 rounded-lg text-xs font-semibold text-primary transition"
+          >
+            {copied ? 'Copied!' : 'Copy Code'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-white/5 text-xs">
+        <div className="bg-white/5 p-2.5 rounded-lg flex items-center justify-between">
+          <span className="text-gray-400">Master IP:</span>
+          <span className="text-white font-mono">{ip}</span>
+        </div>
+        <div className="bg-white/5 p-2.5 rounded-lg flex items-center justify-between">
+          <span className="text-gray-400">HTTP / WS Port:</span>
+          <span className="text-white font-mono">{port}</span>
+        </div>
+        <div className="bg-white/5 p-2.5 rounded-lg flex items-center justify-between">
+          <span className="text-gray-400">UDP Broadcast:</span>
+          <span className="text-emerald-400 font-mono">Port 9999</span>
+        </div>
+        <div className="bg-white/5 p-2.5 rounded-lg flex items-center justify-between">
+          <span className="text-gray-400">Cluster Composition:</span>
+          <span className="text-white font-mono"><span className="text-emerald-400 font-bold">{physicalCount} Physical</span> / <span className="text-blue-400 font-bold">{localCount} Local</span></span>
+        </div>
+      </div>
+
+      <div className="bg-black/40 p-3 rounded-lg border border-white/5 space-y-1.5">
+        <span className="text-[11px] text-gray-400 font-semibold block">Quick Worker Launch Commands:</span>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono">
+          <div className="bg-black/60 p-2 rounded border border-white/5 text-gray-300 flex justify-between items-center">
+            <span>python start_worker.py --cli</span>
+            <span className="text-[10px] text-gray-500 font-sans">Zero-Config Auto-Discovery</span>
+          </div>
+          <div className="bg-black/60 p-2 rounded border border-white/5 text-gray-300 flex justify-between items-center">
+            <span>python start_worker.py --code {code}</span>
+            <span className="text-[10px] text-gray-500 font-sans">Fallback Code Mode</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Worker Detail Modal ───────────────────────────────────────────────────
+function WorkerDetailModal({ worker, onClose }) {
+  if (!worker) return null;
+  const st = STATUS_CONFIG[worker.status] || STATUS_CONFIG.offline;
+  const StIcon = st.icon;
+  const caps = worker.capabilities || {};
+  const isLocal = worker.worker_type === 'LOCAL';
+
+  return (
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="glass-panel p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-5 scale-in" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-white/10 pb-4">
+          <div className="flex items-center gap-3">
+            <StIcon className={`w-5 h-5 ${st.color}`} />
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white">{worker.hostname || worker.worker_uid}</h2>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${isLocal ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}>
+                  {worker.worker_type || 'PHYSICAL'}
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${st.bg} ${st.color} border ${st.border}`}>
+                  {st.label}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 font-mono mt-0.5">UID: {worker.worker_uid}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Specs Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="bg-white/5 p-3 rounded-lg">
+            <span className="text-gray-400 block text-[10px] uppercase">Operating System</span>
+            <span className="font-semibold text-white">{caps.os || worker.platform || 'Unknown'}</span>
+          </div>
+          <div className="bg-white/5 p-3 rounded-lg">
+            <span className="text-gray-400 block text-[10px] uppercase">Architecture</span>
+            <span className="font-semibold text-white">{caps.architecture || 'x64'}</span>
+          </div>
+          <div className="bg-white/5 p-3 rounded-lg">
+            <span className="text-gray-400 block text-[10px] uppercase">Agent Version</span>
+            <span className="font-semibold text-primary">{worker.agent_version || '3.1.0'}</span>
+          </div>
+          <div className="bg-white/5 p-3 rounded-lg">
+            <span className="text-gray-400 block text-[10px] uppercase">Protocol</span>
+            <span className="font-semibold text-white">v{caps.protocol_version || '1.0'}</span>
+          </div>
+        </div>
+
+        {/* Hardware details */}
+        <div className="bg-white/5 p-4 rounded-lg space-y-2 text-xs">
+          <span className="font-semibold text-white block text-xs">Compute Resources:</span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-gray-300">
+            <div>CPU: <span className="text-white font-mono">{worker.cpu_cores} cores ({worker.cpu_model || 'Standard CPU'})</span></div>
+            <div>RAM: <span className="text-white font-mono">{worker.ram_total} GB ({worker.ram_usage?.toFixed(1)}% in use)</span></div>
+            <div>GPU: <span className="text-white font-mono">{worker.gpu_count > 0 ? `${worker.gpu_model} (${worker.vram_total} GB)` : 'None'}</span></div>
+            <div>Docker Sandbox: <span className="text-white font-mono">{caps.docker ? 'Available' : 'Inactive (Subprocess Fallback)'}</span></div>
+          </div>
+        </div>
+
+        {/* Supported Tasks */}
+        {caps.supported_tasks && (
+          <div className="space-y-1.5 text-xs">
+            <span className="text-gray-400 font-semibold">Registered Task Capabilities:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {caps.supported_tasks.map((t, idx) => (
+                <span key={idx} className="bg-black/50 border border-white/10 px-2 py-0.5 rounded text-[11px] font-mono text-gray-300">
+                  {t}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end pt-3 border-t border-white/10">
+          <button onClick={onClose} className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-semibold transition">
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1393,6 +1569,7 @@ function App() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [selectedJob, setSelectedJob] = useState(null);
   const [selectedWorker, setSelectedWorker] = useState(null);
+  const [masterInfo, setMasterInfo] = useState(null);
   const [wsStatus, setWsStatus] = useState('connecting');
 
   const wsRef = useRef(null);
@@ -1401,10 +1578,11 @@ function App() {
   const fetchAll = useCallback(async () => {
     if (!token) return;
     try {
-      const [wRes, cRes, jRes, spRes, rkRes, logRes, alRes] = await Promise.all([
+      const [wRes, cRes, jRes, spRes, rkRes, logRes, alRes, mRes] = await Promise.all([
         fetch(`${API}/workers/`), fetch(`${API}/metrics/cluster`), fetch(`${API}/jobs/`),
         fetch(`${API}/analytics/speedup`), fetch(`${API}/analytics/workers/ranking`),
-        fetch(`${API}/logs/?limit=200`), fetch(`${API}/alerts/`)
+        fetch(`${API}/logs/?limit=200`), fetch(`${API}/alerts/`),
+        fetch(`${API}/master/connection-info`).catch(() => ({ ok: false }))
       ]);
       if (wRes.ok) setWorkers(await wRes.json());
       if (cRes.ok) setCluster(await cRes.json());
@@ -1413,6 +1591,7 @@ function App() {
       if (rkRes.ok) { const d = await rkRes.json(); setRankings(d.rankings || []); }
       if (logRes.ok) { const d = await logRes.json(); setLogs(d.logs || []); }
       if (alRes.ok) { const d = await alRes.json(); setAlerts(d.alerts || []); }
+      if (mRes.ok) setMasterInfo(await mRes.json());
     } catch (e) { console.error('Fetch error:', e); }
   }, [token]);
 
@@ -1626,8 +1805,11 @@ function App() {
 
         {/* ══ NODES TAB ══ */}
         {activeTab === 'workers' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {workers.map(w => <WorkerCard key={w.worker_uid} worker={w} onClick={setSelectedWorker} />)}
+          <div className="space-y-6">
+            <WorkerOnboardingCard masterInfo={masterInfo} workers={workers} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {workers.map(w => <WorkerCard key={w.worker_uid} worker={w} onClick={setSelectedWorker} />)}
+            </div>
           </div>
         )}
 
@@ -1651,6 +1833,7 @@ function App() {
       {/* Modals */}
       <SubmitJobModal show={showSubmit} onClose={() => { setShowSubmit(false); fetchAll(); }} token={token} />
       {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} />}
+      {selectedWorker && <WorkerDetailModal worker={selectedWorker} onClose={() => setSelectedWorker(null)} />}
     </div>
   );
 }

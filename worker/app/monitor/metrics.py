@@ -2,6 +2,7 @@ import psutil
 import socket
 import platform
 import sys
+import os
 import threading
 import subprocess
 import json
@@ -171,7 +172,7 @@ def get_hardware_info() -> dict:
 
     return {
         "ip_address": ip,
-        "hostname": socket.gethostname(),
+        "hostname": os.getenv("WORKER_HOSTNAME") or socket.gethostname(),
         "cpu_cores": psutil.cpu_count(logical=True),
         "ram_total": round(psutil.virtual_memory().total / (1024 ** 3), 2),
         "disk_total": disk_total,

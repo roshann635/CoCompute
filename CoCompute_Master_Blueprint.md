@@ -1,3 +1,4 @@
+
 # CoCompute Master Blueprint
 
 Version: 1.0

@@ -47,7 +47,7 @@ def is_docker_available() -> bool:
 
 async def execute_task(task_payload: dict, chunk_id: int, task_type: str = "generic_python") -> dict:
     """
-    Executes a task chunk payload via Docker container or Task SDK runner.
+    Executes a task chunk payload via Task SDK runner or isolated subprocess / container.
     """
     if not task_payload:
         return {"status": "error", "result": None, "error": "Empty task payload"}
@@ -56,7 +56,6 @@ async def execute_task(task_payload: dict, chunk_id: int, task_type: str = "gene
     task_def = TaskRegistry.get(task_type)
     if task_def:
         try:
-            # Run in worker executor thread
             loop = asyncio.get_event_loop()
             result_data = await loop.run_in_executor(None, task_def.execute, task_payload)
             valid, err = task_def.validate_partial(result_data)
@@ -64,20 +63,19 @@ async def execute_task(task_payload: dict, chunk_id: int, task_type: str = "gene
                 return {"status": "failed", "result": None, "error": f"Partial validation failed: {err}"}
             return {"status": "success", "result": result_data, "error": None}
         except Exception as e:
-            return {"status": "error", "result": None, "error": str(e)}
+            logger.warning(f"TaskRegistry execution failed for {task_type}: {e}, trying script fallback...")
 
-    # 2. Check for script-based payload
+    # 2. Check for script-based payload (e.g. from built-in job generators or custom user scripts)
     script = task_payload.get("script")
     args = task_payload.get("args", [])
+    if script:
+        if is_docker_available():
+            return await execute_in_docker(script, args, chunk_id, task_type)
+        else:
+            return await execute_in_subprocess(script, args, chunk_id)
 
-    if not script:
-        # If no script, try running via generic executor
-        return {"status": "success", "result": task_payload, "error": None}
-
-    if is_docker_available():
-        return await execute_in_docker(script, args, chunk_id, task_type)
-    else:
-        return await execute_in_subprocess(script, args, chunk_id)
+    # 3. Direct pass-through if no script and no SDK task
+    return {"status": "success", "result": task_payload, "error": None}
 
 
 async def execute_in_docker(script: str, args: list, chunk_id: int, task_type: str = "generic_python") -> dict:
@@ -90,6 +88,17 @@ async def execute_in_docker(script: str, args: list, chunk_id: int, task_type: s
         container_name = f"cocompute_task_{chunk_id}_{os.getpid()}"
         image_name = f"cocompute/task-{task_type}:latest"
 
+        processed_args = []
+        for i, a in enumerate(args):
+            str_a = str(a)
+            if len(str_a) > 2048:
+                arg_file_name = f"arg_{i}.json"
+                with open(os.path.join(tmpdir, arg_file_name), "w", encoding="utf-8") as f:
+                    f.write(str_a)
+                processed_args.append(f"/workspace/{arg_file_name}")
+            else:
+                processed_args.append(str_a)
+
         cmd = [
             "docker", "run", "--rm",
             "--name", container_name,
@@ -100,7 +109,7 @@ async def execute_in_docker(script: str, args: list, chunk_id: int, task_type: s
             "-w", "/workspace",
             "python:3.11-slim",
             "python", "task.py"
-        ] + [str(a) for a in args]
+        ] + processed_args
 
         logger.info(f"[Docker] Executing chunk {chunk_id} in container {container_name}")
 
@@ -136,7 +145,18 @@ async def execute_in_subprocess(script: str, args: list, chunk_id: int) -> dict:
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(script)
 
-        cmd = [sys.executable, script_path] + [str(a) for a in args]
+        processed_args = []
+        for i, a in enumerate(args):
+            str_a = str(a)
+            if len(str_a) > 2048:
+                arg_file = os.path.join(tmpdir, f"arg_{i}.json")
+                with open(arg_file, "w", encoding="utf-8") as f:
+                    f.write(str_a)
+                processed_args.append(arg_file)
+            else:
+                processed_args.append(str_a)
+
+        cmd = [sys.executable, script_path] + processed_args
         logger.info(f"[Subprocess] Executing chunk {chunk_id}")
 
         try:

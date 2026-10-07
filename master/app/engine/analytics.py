@@ -239,6 +239,8 @@ def detect_sla_breaches(db: Session, sla_seconds: int = SLA_BREACH_SECONDS) -> l
     Returns a list of alert dicts for breaching chunks.
     """
     now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     breach_threshold = now - timedelta(seconds=sla_seconds)
 
     breaching = db.query(models.TaskChunk).filter(
@@ -249,8 +251,12 @@ def detect_sla_breaches(db: Session, sla_seconds: int = SLA_BREACH_SECONDS) -> l
 
     results = []
     for chunk in breaching:
-        running_for = (now - chunk.start_time).total_seconds() if chunk.start_time else 0
+        st = chunk.start_time
+        if st and st.tzinfo is None:
+            st = st.replace(tzinfo=timezone.utc)
+        running_for = (now - st).total_seconds() if st else 0
         worker = db.query(models.Worker).filter(models.Worker.id == chunk.worker_id).first()
+
         task = db.query(models.Task).filter(models.Task.id == chunk.task_id).first()
         job = db.query(models.Job).filter(models.Job.id == task.job_id).first() if task else None
 
@@ -284,6 +290,8 @@ def get_cluster_alerts(db: Session) -> list:
     """
     alerts = []
     now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
 
     # ── 1: Worker disconnections ──
     recently_threshold = now - timedelta(minutes=10)
@@ -293,7 +301,10 @@ def get_cluster_alerts(db: Session) -> list:
     ).all()
 
     for w in offline_workers:
-        disconnected_ago = (now - w.last_seen).total_seconds() if w.last_seen else 0
+        ls = w.last_seen
+        if ls and ls.tzinfo is None:
+            ls = ls.replace(tzinfo=timezone.utc)
+        disconnected_ago = (now - ls).total_seconds() if ls else 0
         alerts.append({
             "id": f"disconnect_{w.worker_uid}",
             "type": "worker_disconnected",
@@ -301,13 +312,14 @@ def get_cluster_alerts(db: Session) -> list:
             "worker_uid": w.worker_uid,
             "worker_hostname": w.hostname,
             "message": f"Worker '{w.hostname or w.worker_uid[:8]}' disconnected {round(disconnected_ago)}s ago",
-            "timestamp": w.last_seen.isoformat() if w.last_seen else now.isoformat(),
+            "timestamp": ls.isoformat() if ls else now.isoformat(),
             "metadata": {
                 "cpu_cores": w.cpu_cores,
                 "ram_total": w.ram_total,
                 "tasks_completed": w.total_tasks_completed
             }
         })
+
 
     # ── 2: Failed jobs (last hour) ──
     one_hour_ago = now - timedelta(hours=1)

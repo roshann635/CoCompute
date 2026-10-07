@@ -25,31 +25,43 @@ SNAPSHOT_TTL_SECONDS = 10
 
 # Redis client singleton
 _redis_client = None
+_redis_checked = False
+_last_check_time = 0
 
 
 def get_redis_client():
     """Get or create the Redis client singleton."""
-    global _redis_client
+    global _redis_client, _redis_checked, _last_check_time
     if _redis_client is not None:
         return _redis_client
 
+    now = time.time()
+    # Retry check at most once every 60 seconds if initial connection failed
+    if _redis_checked and (now - _last_check_time) < 60:
+        return None
+
+    _last_check_time = now
     try:
         import redis
         _redis_client = redis.Redis.from_url(
             REDIS_URL,
             decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-            retry_on_timeout=True,
+            socket_connect_timeout=0.5,
+            socket_timeout=0.5,
+            retry_on_timeout=False,
         )
         # Test connection
         _redis_client.ping()
         logger.info(f"Metrics Engine: Connected to Redis at {REDIS_URL}")
+        _redis_checked = True
         return _redis_client
     except Exception as e:
-        logger.warning(f"Metrics Engine: Redis unavailable ({e}). Operating in DB-only mode.")
+        if not _redis_checked:
+            logger.warning(f"Metrics Engine: Redis unavailable ({e}). Operating in DB-only mode.")
         _redis_client = None
+        _redis_checked = True
         return None
+
 
 
 def cache_cluster_snapshot(snapshot: dict) -> bool:

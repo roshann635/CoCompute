@@ -27,7 +27,7 @@ from .db.database import engine, Base, get_db, SessionLocal
 from .db import models
 from .api import workers, jobs, metrics, auth, analytics, logs, alerts, files, projects, benchmarks, marketplace, simulation, task_packages, result_explorer, pipelines, provenance
 from .network.ws_manager import manager
-from .network.discovery import start_discovery_server
+from .network.discovery import start_discovery_server, get_lan_ip, get_master_code
 from .engine.scheduler import (
     unified_scheduler_loop, fault_tolerance_loop,
     get_active_algorithm, set_active_algorithm,
@@ -245,6 +245,21 @@ def root():
     }
 
 
+@app.get("/api/v1/master/connection-info")
+def get_master_connection_info():
+    lan_ip = get_lan_ip()
+    port = int(os.getenv("PORT", 8000))
+    code = get_master_code(lan_ip, port)
+    return {
+        "master_code": code,
+        "ip_address": lan_ip,
+        "port": port,
+        "auto_discovery": True,
+        "registration_endpoint": f"http://{lan_ip}:{port}/api/v1/workers/register",
+        "websocket_endpoint": f"ws://{lan_ip}:{port}/ws/worker"
+    }
+
+
 # ── Scheduler Config ─────────────────────────────────────────────────────────
 @app.get("/api/v1/scheduler/config")
 def get_scheduler_config():
@@ -317,8 +332,9 @@ async def websocket_endpoint(
     try:
         while True:
             data = await websocket.receive_json()
+            msg_type = data.get("type") or data.get("action")
 
-            if data.get("type") == "METRICS":
+            if msg_type in ("METRICS", "HEARTBEAT"):
                 m = data.get("data", {})
                 seq = data.get("seq") or data.get("heartbeat_seq")
                 db_worker = db.query(models.Worker).filter(models.Worker.worker_uid == worker_uid).first()
@@ -363,7 +379,7 @@ async def websocket_endpoint(
                     db.add(new_metric)
                     db.commit()
 
-            elif data.get("type") == "RESULT":
+            elif msg_type == "RESULT":
                 chunk_id = data.get("chunk_id")
                 attempt_id = data.get("attempt_id")
                 result_data = data.get("result_data", {})
@@ -435,8 +451,11 @@ async def websocket_endpoint(
 
                 now = datetime.now(timezone.utc)
                 exec_time = None
-                if db_chunk.start_time:
-                    exec_time = (now - db_chunk.start_time).total_seconds()
+                ref_time = db_chunk.start_time or db_chunk.assigned_at
+                if ref_time:
+                    if ref_time.tzinfo is None:
+                        ref_time = ref_time.replace(tzinfo=timezone.utc)
+                    exec_time = (now - ref_time).total_seconds()
 
                 effective_attempt_id = attempt_id or (current_attempt.attempt_uid if current_attempt else f"ATT-{chunk_id}-{db_chunk.attempt_count or 1}")
 
@@ -543,6 +562,7 @@ async def websocket_endpoint(
 
                         await websocket.send_json({
                             "action": "EXECUTE",
+                            "type": "EXECUTE",
                             "protocol_version": "1.0",
                             "master_incarnation_id": CURRENT_INCARNATION_ID,
                             "chunk_id": pending_chunk.id,
@@ -551,7 +571,8 @@ async def websocket_endpoint(
                             "job_id": job.id if job else None,
                             "job_uid": job.job_uid if job else "",
                             "task_type": job.job_type if job else "generic_python",
-                            "payload": pending_chunk.input_data or {}
+                            "payload": pending_chunk.input_data or {},
+                            "task_payload": pending_chunk.input_data or {}
                         })
 
 

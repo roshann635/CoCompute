@@ -6,6 +6,8 @@ from ..schemas import worker as schemas
 from ..core.security import validate_worker_key
 from ..engine.analytics import get_resource_utilization_history
 
+from ..network.ws_manager import manager
+
 router = APIRouter()
 
 
@@ -15,30 +17,38 @@ def register_worker(worker: schemas.WorkerCreate, db: Session = Depends(database
     if not validate_worker_key(worker.api_key):
         raise HTTPException(status_code=403, detail="Invalid worker API key")
 
+    is_ws_active = worker.worker_uid in manager.active_connections
+    now_utc = datetime.now(timezone.utc)
+
     db_worker = db.query(models.Worker).filter(
         models.Worker.worker_uid == worker.worker_uid
     ).first()
 
     if db_worker:
         # Update existing worker
-        db_worker.status = "online"
+        db_worker.status = "online" if is_ws_active else (db_worker.status if db_worker.status in ("online", "busy") and is_ws_active else "registered")
         db_worker.ip_address = worker.ip_address
         db_worker.hostname = worker.hostname
         db_worker.cpu_cores = worker.cpu_cores
         db_worker.ram_total = worker.ram_total
         db_worker.disk_total = worker.disk_total
         db_worker.platform = worker.platform
+        db_worker.worker_type = worker.worker_type or "PHYSICAL"
         db_worker.cpu_model = worker.cpu_model
         db_worker.cpu_frequency = worker.cpu_frequency
         db_worker.mac_address = worker.mac_address
         db_worker.agent_version = worker.agent_version
         db_worker.python_version = worker.python_version
+        if worker.capabilities:
+            db_worker.capabilities = worker.capabilities
+        if worker.lifecycle_state:
+            db_worker.lifecycle_state = worker.lifecycle_state
         # GPU Specs
         db_worker.gpu_count = worker.gpu_count or 0
         db_worker.gpu_model = worker.gpu_model
         db_worker.vram_total = worker.vram_total or 0.0
         db_worker.cuda_available = worker.cuda_available or False
-        db_worker.last_seen = datetime.now(timezone.utc)
+        db_worker.last_seen = now_utc
     else:
         # Create new worker
         db_worker = models.Worker(
@@ -49,16 +59,20 @@ def register_worker(worker: schemas.WorkerCreate, db: Session = Depends(database
             ram_total=worker.ram_total,
             disk_total=worker.disk_total,
             platform=worker.platform,
+            worker_type=worker.worker_type or "PHYSICAL",
             cpu_model=worker.cpu_model,
             cpu_frequency=worker.cpu_frequency,
             mac_address=worker.mac_address,
             agent_version=worker.agent_version,
             python_version=worker.python_version,
+            capabilities=worker.capabilities,
+            lifecycle_state=worker.lifecycle_state or "healthy",
             gpu_count=worker.gpu_count or 0,
             gpu_model=worker.gpu_model,
             vram_total=worker.vram_total or 0.0,
             cuda_available=worker.cuda_available or False,
-            status="online"
+            status="online" if is_ws_active else "registered",
+            last_seen=now_utc
         )
         db.add(db_worker)
 

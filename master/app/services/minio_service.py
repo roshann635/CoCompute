@@ -38,6 +38,11 @@ class MinioService:
         self.available = False
         
         try:
+            import socket
+            host, port_str = endpoint.split(":") if ":" in endpoint else (endpoint, "9000")
+            s = socket.create_connection((host, int(port_str)), timeout=0.5)
+            s.close()
+
             from minio import Minio
             self.client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
             self._ensure_buckets(["chunks", "results", "checkpoints", "artifacts", "models"])

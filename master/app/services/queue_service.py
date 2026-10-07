@@ -28,13 +28,19 @@ class QueueService:
 
         try:
             import redis
-            self.r = redis.Redis.from_url(redis_url, decode_responses=True)
+            self.r = redis.Redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=0.5,
+                socket_timeout=0.5
+            )
             self.r.ping()
             self.pubsub = self.r.pubsub()
             self.available = True
             logger.info(f"Connected to Redis Queue at {redis_url}")
         except Exception as e:
             logger.warning(f"Redis unavailable at {redis_url} ({e}). Using in-memory fallback queue.")
+
 
     # ── Job queue ───────────────────────────────────────────────────────────
 

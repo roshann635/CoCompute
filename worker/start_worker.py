@@ -22,7 +22,11 @@ for path in (CURRENT_DIR, PARENT_DIR):
 
 
 def auto_install_requirements():
-    """Verify core dependencies exist. If not, auto-install them smoothly."""
+    """Verify core dependencies exist. If running from source and packages are missing, attempt smooth install."""
+    if getattr(sys, "frozen", False):
+        # Packaged standalone executable already has all dependencies bundled
+        return
+
     core_packages = ["psutil", "websockets", "httpx"]
     missing = []
     for pkg in core_packages:
@@ -36,13 +40,12 @@ def auto_install_requirements():
         req_file = os.path.join(CURRENT_DIR, "requirements.txt")
         try:
             if os.path.exists(req_file):
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"])
             else:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil>=6.0.0", "websockets>=12.0", "httpx>=0.27.0", "PySide6>=6.7.0"])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "psutil", "websockets", "httpx", "--quiet"])
             print("[✓] Dependencies installed successfully.\n")
-        except Exception as e:
-            print(f"[!] Warning: Could not auto-install: {e}")
-            print("Please run: pip install -r requirements.txt")
+        except Exception:
+            print(f"[!] Note: Automatic pip install skipped or offline. Attempting to continue with available packages...")
 
 
 if __name__ == "__main__":
@@ -66,9 +69,6 @@ if __name__ == "__main__":
         except ImportError:
             pass  # Run in headless mode
 
-    if "--cli" in sys.argv:
-        sys.argv.remove("--cli")
-        if "--gui" in sys.argv:
-            sys.argv.remove("--gui")
-
     main()
+
+

@@ -100,7 +100,8 @@ def filter_available_workers(
     db: Session,
     requires_gpu: bool = False,
     min_vram_gb: float = 0.0,
-    required_capabilities: Optional[Dict[str, Any]] = None
+    required_capabilities: Optional[Dict[str, Any]] = None,
+    check_active_ws: bool = False
 ) -> Tuple[List[models.Worker], List[models.Worker]]:
     """
     Filters out offline, overloaded, untrusted, draining/failed/recovering, GPU-incompatible,
@@ -110,6 +111,11 @@ def filter_available_workers(
     skipped = []
     for w in workers:
         if w.status not in ("online", "idle"):
+            skipped.append(w)
+            continue
+
+        # Active WebSocket Gate: Physical workers must be connected in manager if check_active_ws is enabled
+        if check_active_ws and not getattr(w, "is_simulated", False) and w.worker_uid not in manager.active_connections:
             skipped.append(w)
             continue
 
@@ -411,7 +417,10 @@ def reschedule_worker_chunks(db: Session, worker: models.Worker, reason: str = "
             current_attempt.completed_at = now
             current_attempt.failure_reason = reason
             if current_attempt.assigned_at:
-                current_attempt.duration_seconds = (now - current_attempt.assigned_at).total_seconds()
+                att_assigned = current_attempt.assigned_at
+                if att_assigned.tzinfo is None:
+                    att_assigned = att_assigned.replace(tzinfo=timezone.utc)
+                current_attempt.duration_seconds = (now - att_assigned).total_seconds()
 
         task = db.query(models.Task).filter(models.Task.id == chunk.task_id).first()
         job = db.query(models.Job).filter(models.Job.id == task.job_id).first() if task else None
@@ -458,16 +467,44 @@ async def fault_tolerance_loop():
         db = None
         try:
             db = SessionLocal()
-            cutoff = datetime.utcnow() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
-            stale_workers = db.query(models.Worker).filter(
-                models.Worker.status.in_(["online", "busy"]),
-                models.Worker.last_seen < cutoff
+            now_utc = datetime.now(timezone.utc)
+            cutoff = now_utc - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+            active_workers = db.query(models.Worker).filter(
+                models.Worker.status.in_(["online", "busy", "idle"]),
+                models.Worker.is_simulated == False
             ).all()
-            for w in stale_workers:
-                w.status = "suspected"
-                rescheduled = reschedule_worker_chunks(db, w, reason="heartbeat_timeout")
-                if rescheduled:
-                    db.commit()
+            for w in active_workers:
+                is_stale = False
+                if w.worker_uid not in manager.active_connections:
+                    is_stale = True
+                elif w.last_seen:
+                    ls = w.last_seen
+                    if ls.tzinfo is None:
+                        ls = ls.replace(tzinfo=timezone.utc)
+                    if ls < cutoff:
+                        is_stale = True
+                else:
+                    is_stale = True
+
+                if is_stale:
+                    w.status = "suspected"
+                    rescheduled = reschedule_worker_chunks(db, w, reason="connection_lost_or_heartbeat_timeout")
+                    if rescheduled:
+                        db.commit()
+
+            # Reclaim stalled assigned chunks (> 45s) where worker has not completed
+            stalled_cutoff = now_utc - timedelta(seconds=45)
+            stalled_chunks = db.query(models.TaskChunk).filter(
+                models.TaskChunk.status == "assigned",
+                models.TaskChunk.assigned_at < stalled_cutoff
+            ).all()
+            for sc in stalled_chunks:
+                logger.warning(f"[FaultWatchdog] Reclaiming stalled assigned chunk {sc.id} (assigned > 45s ago)")
+                sc.status = "pending"
+                sc.worker_id = None
+                sc.assigned_at = None
+                sc.version = (sc.version or 0) + 1
+                db.commit()
         except Exception as e:
             logger.error(f"Fault tolerance loop error: {e}")
         finally:
@@ -528,7 +565,7 @@ async def unified_scheduler_loop():
                 min_vram = float(job.min_vram_gb or 0.0) if job else 0.0
 
                 workers, skipped = filter_available_workers(
-                    all_workers, db, requires_gpu=requires_gpu, min_vram_gb=min_vram
+                    all_workers, db, requires_gpu=requires_gpu, min_vram_gb=min_vram, check_active_ws=True
                 )
                 if not workers:
                     continue
@@ -615,6 +652,7 @@ async def unified_scheduler_loop():
                 payload_data = chunk.input_data or {}
                 msg = {
                     "action": "EXECUTE",
+                    "type": "EXECUTE",
                     "protocol_version": "1.0",
                     "master_incarnation_id": CURRENT_INCARNATION_ID,
                     "chunk_id": chunk.id,
@@ -623,14 +661,17 @@ async def unified_scheduler_loop():
                     "job_id": job.id if job else None,
                     "job_uid": job.job_uid if job else f"JOB-{job.id}" if job else "",
                     "task_type": job.job_type if job else "generic_python",
-                    "payload": payload_data
+                    "payload": payload_data,
+                    "task_payload": payload_data
                 }
 
                 try:
                     if selected_worker.is_simulated:
                         asyncio.create_task(_simulate_chunk_execution(chunk.id, attempt_uid, selected_worker.id, job.job_type if job else "sorting"))
                     else:
-                        await manager.send_to_worker(selected_worker.worker_uid, msg)
+                        sent = await manager.send_to_worker(selected_worker.worker_uid, msg)
+                        if not sent:
+                            raise ConnectionError(f"Worker {selected_worker.worker_uid} WebSocket is not active")
                 except Exception as dispatch_err:
                     # ── Invariant 5.2: Rollback Reservations on Dispatch Failure ──
                     logger.error(f"[DispatchFailure] Failed to dispatch to {selected_worker.worker_uid}, rolling back: {dispatch_err}")
@@ -662,7 +703,10 @@ async def _simulate_chunk_execution(chunk_id: int, attempt_uid: str, worker_id: 
             chunk.status = "completed"
             chunk.accepted_attempt_id = attempt_uid
             chunk.end_time = datetime.now(timezone.utc)
-            duration = (chunk.end_time - (chunk.assigned_at or chunk.end_time)).total_seconds()
+            assigned_time = chunk.assigned_at
+            if assigned_time and assigned_time.tzinfo is None:
+                assigned_time = assigned_time.replace(tzinfo=timezone.utc)
+            duration = (chunk.end_time - (assigned_time or chunk.end_time)).total_seconds()
 
             attempt = db.query(models.ChunkAttempt).filter(models.ChunkAttempt.attempt_uid == attempt_uid).first()
             if attempt:

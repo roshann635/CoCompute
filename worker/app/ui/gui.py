@@ -97,11 +97,11 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("CoCompute Agent Settings")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(420)
         self.setStyleSheet("""
             QDialog { background-color: #1e1e24; color: #ffffff; }
             QLabel { color: #a0a0b0; font-size: 12px; font-weight: bold; }
-            QLabel#ReadOnlyInfo { color: #6b7280; font-size: 10px; font-weight: normal; font-style: italic; }
+            QLabel#ReadOnlyInfo { color: #6b7280; font-size: 11px; font-weight: normal; font-style: italic; }
             QLineEdit, QSpinBox {
                 background-color: #2b2b36; border: 1px solid #3f3f50;
                 border-radius: 6px; padding: 6px; color: #ffffff; font-size: 12px;
@@ -114,17 +114,20 @@ class SettingsDialog(QDialog):
         """)
 
         layout = QFormLayout(self)
-        self.worker_id_display = QLineEdit(os.getenv("WORKER_UID", "Auto-assigned"))
-        self.worker_id_display.setReadOnly(True)
-        layout.addRow("Worker ID:", self.worker_id_display)
+        self.worker_id_edit = QLineEdit(os.getenv("WORKER_UID", ""))
+        self.worker_id_edit.setPlaceholderText("Auto-generated UUID if blank")
+        layout.addRow("Worker UID:", self.worker_id_edit)
 
-        self.master_display = QLineEdit(
-            f"{os.getenv('MASTER_IP', 'Auto-discover')}:{os.getenv('MASTER_PORT', '')}"
-        )
-        self.master_display.setReadOnly(True)
-        layout.addRow("Master:", self.master_display)
+        self.master_ip_edit = QLineEdit(os.getenv("MASTER_IP", ""))
+        self.master_ip_edit.setPlaceholderText("Auto-discover via UDP / LAN")
+        layout.addRow("Master Host / IP:", self.master_ip_edit)
 
-        info_label = QLabel("☝ Worker ID and Master are auto-assigned via UDP discovery.")
+        self.master_port_spin = QSpinBox()
+        self.master_port_spin.setRange(1, 65535)
+        self.master_port_spin.setValue(int(os.getenv("MASTER_PORT", "8000")))
+        layout.addRow("Master Port:", self.master_port_spin)
+
+        info_label = QLabel("💡 Leave Master IP blank to use automatic UDP/LAN network discovery.")
         info_label.setObjectName("ReadOnlyInfo")
         layout.addRow(info_label)
 
@@ -138,7 +141,7 @@ class SettingsDialog(QDialog):
         layout.addRow("API Key / Token:", self.key_edit)
 
         btn_layout = QHBoxLayout()
-        save_btn = QPushButton("Save Settings")
+        save_btn = QPushButton("Save & Reconnect")
         save_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setObjectName("cancelBtn")
@@ -149,10 +152,19 @@ class SettingsDialog(QDialog):
         layout.addRow(btn_layout)
 
     def get_settings(self):
-        return {
+        settings = {
             "HEARTBEAT_INTERVAL": str(self.interval_spin.value()),
             "WORKER_API_KEY": self.key_edit.text().strip(),
+            "MASTER_PORT": str(self.master_port_spin.value()),
         }
+        if self.worker_id_edit.text().strip():
+            settings["WORKER_UID"] = self.worker_id_edit.text().strip()
+        if self.master_ip_edit.text().strip():
+            settings["MASTER_IP"] = self.master_ip_edit.text().strip()
+        else:
+            settings["MASTER_IP"] = ""
+        return settings
+
 
 
 class MainWindow(QMainWindow):

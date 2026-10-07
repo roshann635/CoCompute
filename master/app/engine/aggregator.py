@@ -373,7 +373,10 @@ def try_aggregate_job(db: Session, job_id: int) -> bool:
     job.status = "completed" if not (failed_chunks and not completed_chunks) else "failed"
     job.end_time = datetime.now(timezone.utc)
 
-    exec_time = (job.end_time - job.start_time).total_seconds() if job.start_time and job.end_time else None
+    st = job.start_time
+    if st and st.tzinfo is None:
+        st = st.replace(tzinfo=timezone.utc)
+    exec_time = (job.end_time - st).total_seconds() if st and job.end_time else None
     job.actual_duration_sec = exec_time
     job.result_preview = _generate_result_preview(job.job_type, aggregated, exec_time)
 

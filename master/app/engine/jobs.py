@@ -44,7 +44,9 @@ print(json.dumps({"primes_found": len(primes), "primes": primes[:100]}))
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [str(current_start), str(current_end)]
+                "args": [str(current_start), str(current_end)],
+                "start": current_start,
+                "end": current_end
             }
         })
         current_start = current_end
@@ -61,8 +63,13 @@ def generate_matrix_multiply_job(rows_a: int = 50, cols_a: int = 50, cols_b: int
     tasks = []
 
     script = """
-import sys, json
-data = json.loads(sys.argv[1])
+import sys, json, os
+arg = sys.argv[1] if len(sys.argv) > 1 else "{}"
+if os.path.isfile(arg):
+    with open(arg, "r", encoding="utf-8") as f:
+        data = json.load(f)
+else:
+    data = json.loads(arg)
 rows_a = data["rows_a"]
 matrix_b = data["matrix_b"]
 start_row = data["start_row"]
@@ -94,7 +101,10 @@ print(json.dumps({"start_row": start_row, "result_rows": result_rows}))
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "rows_a": chunk_rows,
+                "matrix_b": matrix_b,
+                "start_row": start_row
             }
         })
     return tasks
@@ -106,9 +116,14 @@ def generate_word_count_job(text: str = "hello world", chunks: int = 5) -> list:
     tasks = []
 
     script = """
-import sys, json
+import sys, json, os
 from collections import Counter
-data = json.loads(sys.argv[1])
+arg = sys.argv[1] if len(sys.argv) > 1 else "{}"
+if os.path.isfile(arg):
+    with open(arg, "r", encoding="utf-8") as f:
+        data = json.load(f)
+else:
+    data = json.loads(arg)
 words = data["words"]
 counts = dict(Counter(words))
 print(json.dumps({"word_counts": counts, "total_words": len(words)}))
@@ -126,7 +141,8 @@ print(json.dumps({"word_counts": counts, "total_words": len(words)}))
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "words": chunk_words
             }
         })
     return tasks
@@ -156,8 +172,13 @@ def generate_sorting_job(array_size: int = 1000, chunks: int = 5) -> list:
     tasks = []
 
     script = """
-import sys, json
-data = json.loads(sys.argv[1])
+import sys, json, os
+arg = sys.argv[1] if len(sys.argv) > 1 else "{}"
+if os.path.isfile(arg):
+    with open(arg, "r", encoding="utf-8") as f:
+        data = json.load(f)
+else:
+    data = json.loads(arg)
 numbers = data["numbers"]
 numbers.sort()
 print(json.dumps({"sorted_numbers": numbers}))
@@ -175,7 +196,8 @@ print(json.dumps({"sorted_numbers": numbers}))
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "numbers": chunk_data
             }
         })
     return tasks
@@ -235,7 +257,9 @@ print(json.dumps({"processed_images": processed, "filter_applied": filter_type})
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "images": chunk_images,
+                "filter_type": filter_type
             }
         })
     return tasks
@@ -270,7 +294,8 @@ print(json.dumps({
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "text": chunk_text
             }
         })
     return tasks
@@ -284,8 +309,13 @@ def generate_statistics_job(array_size: int = 1000, chunks: int = 5) -> list:
     tasks = []
 
     script = """
-import sys, json
-data = json.loads(sys.argv[1])
+import sys, json, os
+arg = sys.argv[1] if len(sys.argv) > 1 else "{}"
+if os.path.isfile(arg):
+    with open(arg, "r", encoding="utf-8") as f:
+        data = json.load(f)
+else:
+    data = json.loads(arg)
 numbers = data["numbers"]
 numbers.sort()
 print(json.dumps({
@@ -309,7 +339,8 @@ print(json.dumps({
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "numbers": chunk_data
             }
         })
     return tasks
@@ -327,8 +358,13 @@ def generate_search_job(array_size: int = 100000, target: int = 42, chunks: int 
     tasks = []
 
     script = """
-import sys, json
-data = json.loads(sys.argv[1])
+import sys, json, os
+arg = sys.argv[1] if len(sys.argv) > 1 else "{}"
+if os.path.isfile(arg):
+    with open(arg, "r", encoding="utf-8") as f:
+        data = json.load(f)
+else:
+    data = json.loads(arg)
 numbers = data["numbers"]
 target = data["target"]
 offset = data["offset"]
@@ -365,7 +401,10 @@ print(json.dumps({
             "payload": {
                 "type": "python",
                 "script": script,
-                "args": [payload_data]
+                "args": [payload_data],
+                "numbers": chunk_data,
+                "target": target,
+                "offset": start
             }
         })
     return tasks

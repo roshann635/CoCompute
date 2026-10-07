@@ -97,10 +97,15 @@ def recover_after_restart(db, incarnation_id: str, hostname: str = "master-host"
             job.total_tasks = total_chunks
             job.completed_tasks = completed_chunks
             
-            # If all chunks accepted but job is still running/pending, it can be aggregated
+            # If all chunks accepted but job is still running/pending, trigger aggregator
             if total_chunks > 0 and completed_chunks == total_chunks:
-                # Let aggregator handle finalization in its cycle
-                pass
+                try:
+                    from .aggregator import try_aggregate_job
+                    try_aggregate_job(db, job.id)
+                except Exception as agg_err:
+                    logger.error(f"[Recovery] Aggregation attempt failed for job {job.id}: {agg_err}")
+            elif completed_chunks == 0 and total_chunks > 0:
+                job.status = "pending"
 
         report["jobs_updated"] = len(active_jobs)
         report["status"] = "success"
