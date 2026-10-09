@@ -1,7 +1,8 @@
 # CoCompute ⚡️
 **Universal Autonomous Distributed Computing Platform**
 
-[![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/pytest-130%20passed-brightgreen.svg)]()
+[![Selenium E2E](https://img.shields.io/badge/selenium%20E2E-16%2F16%20passed-success.svg)]()
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)]()
 [![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688.svg)]()
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt-41cd52.svg)]()
@@ -199,45 +200,64 @@ CoCompute operates under the fundamental invariant **`CORRECTNESS > STATUS`**.
 
 ---
 
-## 🧪 Automated Test Suite
+## 🧪 Automated Test Suite & E2E Verification
 
-CoCompute includes a comprehensive multi-tier test suite covering correctness, fault injection, concurrency, cross-platform paths, and deployment diagnostics:
+CoCompute includes a multi-tier automated test suite covering algorithmic correctness, fault injection, concurrency, cross-platform paths, deployment diagnostics, and full Selenium browser automation:
 
 ```bash
+# Run backend, scheduler, and algorithmic test suite
 python -m pytest tests/ -v
+
+# Run Selenium End-to-End browser automation
+python -m pytest tests/test_ui_e2e_selenium.py -v
 ```
 
-### Verification Summary (115 passed / 115 tests):
+### Verification Summary (130 Pytest Units & Integration Tests):
 ```
-collected 115 items
+collected 130 items
 
-tests/test_ai_scheduler.py .                                              [  0%]
-tests/test_analytics.py .........                                         [  8%]
-tests/test_api.py ..........                                              [ 17%]
-tests/test_auth.py .......                                                [ 23%]
-tests/test_cocompute_1_core.py ......                                     [ 28%]
-tests/test_cocompute_2_advanced.py ......                                 [ 33%]
-tests/test_cocompute_3_intelligence.py ......                             [ 39%]
-tests/test_cocompute_4_platform.py ....                                   [ 42%]
-tests/test_cross_platform_paths.py ...                                    [ 45%]
-tests/test_demo_mode.py ....                                              [ 48%]
-tests/test_deployment_diagnostics.py ....                                 [ 52%]
-tests/test_e2e_correctness.py ....                                        [ 55%]
-tests/test_failure_policy.py ..                                           [ 57%]
-tests/test_fault_injection.py .                                           [ 58%]
-tests/test_gaps_and_features.py .........                                 [ 66%]
-tests/test_institutional_scale.py .......                                 [ 72%]
-tests/test_jobs.py ...                                                    [ 74%]
-tests/test_master_discovery.py ...                                        [ 77%]
+tests/test_aggregator.py ..........                                       [  7%]
+tests/test_ai_scheduler.py .                                              [  8%]
+tests/test_analytics.py .........                                         [ 15%]
+tests/test_api.py ..........                                              [ 23%]
+tests/test_auth.py .......                                                [ 28%]
+tests/test_cocompute_1_core.py ......                                     [ 33%]
+tests/test_cocompute_2_advanced.py ......                                 [ 37%]
+tests/test_cocompute_3_intelligence.py ......                             [ 42%]
+tests/test_cocompute_4_platform.py ......                                 [ 46%]
+tests/test_cross_platform_paths.py ...                                    [ 49%]
+tests/test_demo_mode.py ....                                              [ 52%]
+tests/test_deployment_diagnostics.py ....                                 [ 55%]
+tests/test_e2e_correctness.py ....                                        [ 58%]
+tests/test_failure_policy.py ..                                           [ 60%]
+tests/test_fault_injection.py .                                           [ 61%]
+tests/test_gaps_and_features.py .........                                 [ 68%]
+tests/test_institutional_scale.py .......                                 [ 73%]
+tests/test_jobs.py ...                                                    [ 75%]
+tests/test_master_discovery.py ...                                        [ 78%]
 tests/test_master_leadership.py ...                                       [ 80%]
 tests/test_ml_orchestration.py ....                                       [ 83%]
-tests/test_scheduler.py ........                                          [ 90%]
-tests/test_scheduler_concurrency.py ..                                    [ 92%]
-tests/test_sdk.py ......                                                  [ 97%]
-tests/test_worker_capabilities.py ...                                     [100%]
+tests/test_scheduler.py ........                                          [ 89%]
+tests/test_scheduler_concurrency.py ..                                    [ 91%]
+tests/test_sdk.py ......                                                  [ 95%]
+tests/test_storage_and_metrics.py ..                                      [ 97%]
+tests/test_worker_capabilities.py ...                                     [ 99%]
+tests/test_worker_metrics.py ..                                           [100%]
 
-====================== 115 passed, 31 warnings in 18.05s =======================
+============================ 130 passed in 23.40s =============================
 ```
+
+### 🌐 Selenium E2E Browser Test Suite (16/16 Passed — 100% Pass Rate)
+Full live browser automation tests running against Chrome headless driver:
+- **API Health Check**: Master connection & worker registration verification
+- **Authentication**: User registration, login & JWT token retention
+- **Overview & Nodes**: Live worker card inspection, telemetry meters, and node hardware specs
+- **WebSocket Telemetry**: Bi-directional real-time push streaming verification
+- **Workload Execution**: Sorting job (25k elements) & Prime job submission and execution
+- **Result Integrity**: Verification of computed result previews and cryptographic multiset hashes
+- **Tab Navigation & Modals**: Complete verification across all 8 dashboard tabs
+
+*Detailed execution report and screenshots available in [`tests/selenium_e2e_report.md`](./tests/selenium_e2e_report.md).*
 
 ---
 

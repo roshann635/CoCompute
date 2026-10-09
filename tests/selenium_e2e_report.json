@@ -1,0 +1,121 @@
+{
+  "total": 16,
+  "passed": 16,
+  "failed": 0,
+  "skipped": 0,
+  "total_time_s": 91.99,
+  "results": [
+    {
+      "name": "API Health Check",
+      "status": "PASS",
+      "duration_s": 0.03,
+      "detail": "18 workers registered, 3 online",
+      "screenshot": null
+    },
+    {
+      "name": "Browser Setup",
+      "status": "PASS",
+      "duration_s": 0,
+      "detail": "Browser initialized: chrome",
+      "screenshot": null
+    },
+    {
+      "name": "Dashboard Reachable",
+      "status": "PASS",
+      "duration_s": 0.35,
+      "detail": "Title: dashboard",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\01_dashboard_loaded.png"
+    },
+    {
+      "name": "Auth Register/Login",
+      "status": "PASS",
+      "duration_s": 9.92,
+      "detail": "Successfully authenticated",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\02_after_auth.png"
+    },
+    {
+      "name": "Overview Stats Display",
+      "status": "PASS",
+      "duration_s": 2.26,
+      "detail": "Found labels: ['Total Nodes', 'Online Nodes', 'Active Cores']",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\03_overview_stats.png"
+    },
+    {
+      "name": "Worker Nodes Visible",
+      "status": "PASS",
+      "duration_s": 2.61,
+      "detail": "Online workers visible in Nodes tab",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\04_worker_nodes.png"
+    },
+    {
+      "name": "WebSocket Telemetry",
+      "status": "PASS",
+      "duration_s": 2.22,
+      "detail": "Real-time WebSocket connection active (Adaptive Hybrid mode)",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\13_ws_telemetry.png"
+    },
+    {
+      "name": "Submit Sorting Job",
+      "status": "PASS",
+      "duration_s": 7.09,
+      "detail": "Sorting job submitted via dashboard modal",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\06_after_job_submit.png"
+    },
+    {
+      "name": "Job Execution Wait",
+      "status": "PASS",
+      "duration_s": 0.14,
+      "detail": "Job 'Merge Sort Job' completed in 0s",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\07_job_completed.png"
+    },
+    {
+      "name": "Jobs Tab Display",
+      "status": "PASS",
+      "duration_s": 2.55,
+      "detail": "Job entries visible in Jobs & Queue tab",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\08_jobs_tab.png"
+    },
+    {
+      "name": "Job Result Verification",
+      "status": "PASS",
+      "duration_s": 0.02,
+      "detail": "Job completed with result keys: ['sorted_preview', 'total_elements', 'min_value', 'max_value', 'is_sorted', 'validation']",
+      "screenshot": null
+    },
+    {
+      "name": "Submit & Execute Prime Job",
+      "status": "PASS",
+      "duration_s": 13.88,
+      "detail": "Prime job completed in 0s",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\12_prime_completed.png"
+    },
+    {
+      "name": "Navigate All Tabs",
+      "status": "PASS",
+      "duration_s": 21.18,
+      "detail": "Visited 8/8 tabs: ['Overview', 'Task Registry', 'Result Explorer', 'Jobs', 'Pool', 'Analytics', 'Nodes', 'Logs']",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\09_all_tabs.png"
+    },
+    {
+      "name": "Worker Detail Modal",
+      "status": "PASS",
+      "duration_s": 10.6,
+      "detail": "Worker detail modal opened with hardware specs",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\10_worker_detail.png"
+    },
+    {
+      "name": "API Provenance Check",
+      "status": "PASS",
+      "duration_s": 0.08,
+      "detail": "Provenance retrieved: 5 chunks with attempt trees",
+      "screenshot": null
+    },
+    {
+      "name": "Final Dashboard State",
+      "status": "PASS",
+      "duration_s": 13.76,
+      "detail": "Dashboard final state captured successfully",
+      "screenshot": "d:\\CoCompute\\tests\\screenshots\\14_final_state.png"
+    }
+  ]
+}
